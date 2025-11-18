@@ -617,7 +617,11 @@ def admin_services(business_id):
 
 # ------------------ Run ------------------
 if __name__ == "__main__":
-    print("DB_PATH:", DB_PATH)
+    print("Using DB:", DB_PATH)
     init_db()
-    app.run(port=5000, debug=False, use_reloader=False)
+
+    # On Render, PORT is provided as an env var. Locally defaults to 5000.
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)
+
 

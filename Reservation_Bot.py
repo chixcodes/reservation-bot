@@ -22,9 +22,30 @@ def get_business_by_phone_number_id(phone_number_id):
             "phone_number_id": row[2],
             "access_token": row[3],
             "calendar_id": row[4],
-            "timezone": row[5]
+            "timezone": row[5],
+            "provider": row[6],
+            "api_key": row[7]
         }
     return None
+def get_business_by_id(business_id):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT * FROM businesses WHERE id=?", (business_id,))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        return {
+            "id": row[0],
+            "name": row[1],
+            "phone_number_id": row[2],
+            "access_token": row[3],
+            "calendar_id": row[4],
+            "timezone": row[5],
+            "provider": row[6],
+            "api_key": row[7]
+        }
+    return None
+
 
 
 # ------------------ Flask ------------------
@@ -43,29 +64,42 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
 
-    # 1) Businesses table (NEW)
+    # 1) Businesses table (supports meta + 360dialog)
     c.execute("""
         CREATE TABLE IF NOT EXISTS businesses (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT,
-            phone_number_id TEXT UNIQUE,
+            phone_number_id TEXT,
             access_token TEXT,
             calendar_id TEXT,
-            timezone TEXT
+            timezone TEXT,
+            provider TEXT DEFAULT 'meta',
+            api_key TEXT
         )
     """)
 
-    # ensure there is at least one default business with id=1
+    # Safe ALTERs in case the table already existed
+    try:
+        c.execute("ALTER TABLE businesses ADD COLUMN provider TEXT DEFAULT 'meta'")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        c.execute("ALTER TABLE businesses ADD COLUMN api_key TEXT")
+    except sqlite3.OperationalError:
+        pass
+
+    # Ensure default business with id = 1
     c.execute("SELECT id FROM businesses WHERE id = 1")
     if not c.fetchone():
         c.execute(
-            "INSERT INTO businesses (id, name, phone_number_id, access_token, calendar_id, timezone) "
-            "VALUES (1, ?, ?, ?, ?, ?)",
+            "INSERT INTO businesses (id, name, phone_number_id, access_token, calendar_id, timezone, provider) "
+            "VALUES (1, ?, ?, ?, ?, ?, 'meta')",
             (
                 BUSINESS_NAME,
                 PHONE_NUMBER_ID or "",
                 ACCESS_TOKEN or "",
-                "primary",           # default Google Calendar
+                "primary",
                 "Asia/Beirut"
             )
         )
@@ -138,20 +172,136 @@ BUSINESS_NAME   = os.getenv("BUSINESS_NAME", "Demo Business")  # multibusiness
 user_state = {}  # phone -> step data
 
 def send_message(to, text, business):
-    url = f"https://graph.facebook.com/v21.0/{business['phone_number_id']}/messages"
-    headers = {
-        "Authorization": f"Bearer {business['access_token']}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": to,
-        "type": "text",
-        "text": {"body": text}
-    }
+    """
+    Send a WhatsApp message via either Meta Cloud API or 360dialog,
+    depending on business['provider'].
+    """
+    provider = (business.get("provider") or "meta").lower()
 
-    r = requests.post(url, headers=headers, json=payload)
-    print("send_message:", r.status_code, r.text)
+    if provider == "360dialog":
+        # 360dialog API
+        url = "https://waba-v1.360dialog.io/messages"
+        headers = {
+            "D360-API-KEY": business.get("api_key", ""),
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "recipient_type": "individual",
+            "to": to,
+            "type": "text",
+            "text": {"body": text}
+        }
+    else:
+        # Default: Meta Cloud API
+        url = f"https://graph.facebook.com/v21.0/{business['phone_number_id']}/messages"
+        headers = {
+            "Authorization": f"Bearer {business['access_token']}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": to,
+            "type": "text",
+            "text": {"body": text}
+        }
+
+    try:
+        r = requests.post(url, headers=headers, json=payload, timeout=15)
+        print("send_message:", provider, r.status_code, r.text)
+    except Exception as e:
+        print("send_message error:", provider, e)
+
+def process_incoming_message(business, phone, text):
+    """
+    Shared conversation logic for both Meta and 360dialog webhooks.
+    """
+    global user_state
+
+    t = text.strip()
+    lt = t.lower()
+
+    # user_state key includes business_id so same phone can talk to multiple businesses
+    key = (business["id"], phone)
+    state = user_state.get(key)
+
+    # booking intent
+    if lt.startswith("book") or "book" in lt or "appointment" in lt or "reserve" in lt:
+        user_state[key] = {"step": "awaiting_name"}
+        send_message(phone, "Sure — what is your full name?", business)
+        return "ok", 200
+
+    # cancel intent
+    if "cancel" in lt or "delete" in lt:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("DELETE FROM reservations WHERE business_id=? AND phone=?", (business["id"], phone))
+        conn.commit()
+        conn.close()
+        user_state.pop(key, None)
+        send_message(phone, "✅ All reservations under your number have been cancelled.", business)
+        return "ok", 200
+
+    # multi-step flow
+    if state and state.get("step") == "awaiting_name":
+        state["name"] = t
+        state["step"] = "awaiting_service"
+        send_message(phone, f"Thanks, {t}. Which service would you like? (e.g., haircut, consultation)", business)
+        return "ok", 200
+
+    if state and state.get("step") == "awaiting_service":
+        state["service"] = t
+        state["step"] = "awaiting_date"
+        send_message(phone, "What date would you like? (e.g., 2025-11-20 or 20 Nov)", business)
+        return "ok", 200
+
+    if state and state.get("step") == "awaiting_date":
+        state["date"] = t
+        state["step"] = "awaiting_time"
+        send_message(phone, "What time? (e.g., 16:00 or 4 PM)", business)
+        return "ok", 200
+
+    if state and state.get("step") == "awaiting_time":
+        state["time"] = t
+
+        # save reservation
+        save_reservation(
+            business["id"],
+            phone,
+            state.get("name", ""),
+            state.get("service", ""),
+            state.get("date", ""),
+            state.get("time", "")
+        )
+
+        # optional: Google Calendar
+        try:
+            summary = f"{state.get('service')} – {state.get('name')}"
+            description = f"From: {phone}\nService: {state.get('service')}\nWhen: {state.get('date')} {state.get('time')}"
+            create_event(summary, state.get("date", ""), state.get("time", ""),
+                         description=description,
+                         calendar_id=business["calendar_id"],
+                         duration_min=45)
+            send_message(phone, "📅 Also added to our Google Calendar.", business)
+        except Exception as e:
+            print("gcal error:", e)
+
+        send_message(
+            phone,
+            f"✅ Reservation confirmed for {state.get('service')} on {state.get('date')} at {state.get('time')}. "
+            f"Thank you, {state.get('name')}!",
+            business
+        )
+        user_state.pop(key, None)
+        return "ok", 200
+
+    # fallback
+    send_message(
+        phone,
+        "Sorry, I didn't understand. Type 'book' to create a reservation or 'cancel' to cancel.",
+        business
+    )
+    return "ok", 200
+
 
 def save_reservation (business_id, phone, name, service, date, time_):
         conn = get_db_connection()
@@ -259,158 +409,59 @@ def suggest_slots(
 # ------------------ Routes ------------------
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
-    # Verify webhook
+    # Verification (GET) – this is used by Meta when you first set up the webhook
     if request.method == "GET":
         mode = request.args.get("hub.mode")
         token = request.args.get("hub.verify_token")
         challenge = request.args.get("hub.challenge")
         if mode == "subscribe" and token == VERIFY_TOKEN:
-            print("WEBHOOK VERIFIED")
+            print("WEBHOOK VERIFIED (Meta)")
             return challenge, 200
         return "Forbidden", 403
 
-    # Handle messages
+    # Handle incoming messages (POST)
     data = request.get_json(silent=True)
-    print("INCOMING:", data)
-    # Detect which business this message belongs to
-    phone_number_id = data['entry'][0]['changes'][0]['value']['metadata']['phone_number_id']
-    business = get_business_by_phone_number_id(phone_number_id)
-
-    if not business:
-        print("Unknown business:", phone_number_id)
-        return "ok", 200
+    print("INCOMING META:", data)
 
     try:
-        message = data["entry"][0]["changes"][0]["value"]["messages"][0]
-        phone   = message["from"]
-        text    = message.get("text", {}).get("body", "").strip()
-        # --- prevent duplicate handling of same message ---
-        message_id = message.get("id")
-        if hasattr(app, "last_message_id") and app.last_message_id == message_id:
-            print("Duplicate message ignored")
+        # pick the business based on phone_number_id from Meta payload
+        phone_number_id = data['entry'][0]['changes'][0]['value']['metadata']['phone_number_id']
+        business = get_business_by_phone_number_id(phone_number_id)
+        if not business:
+            print("Unknown business:", phone_number_id)
             return "ok", 200
-        app.last_message_id = message_id
 
-    except Exception:
-        return "ok", 200  # ignore non-text events
-
-    t = text.lower()
-    state = user_state.get(phone)
-
-    # Cancel flow
-    if "cancel" in t or "delete" in t:
-        conn = get_db_connection()
-        conn.execute("DELETE FROM reservations WHERE phone = ?", (phone,))
-        conn.commit()
-        conn.close()
-        user_state.pop(phone, None)
-        send_message(phone, "✅ All reservations under your number have been cancelled.", business)
+        # extract sender + text
+        message = data['entry'][0]['changes'][0]['value']['messages'][0]
+        phone = message['from']
+        text = message.get('text', {}).get('body', '')
+    except Exception as e:
+        print("Meta webhook parse error:", e)
         return "ok", 200
 
-    # Start booking
-    if "book" in t or "appointment" in t or "reserve" in t:
-        user_state[phone] = {"step": "awaiting_name"}
-        send_message(phone, "Sure — what is your full name?",business)
+    # Hand off to the shared conversation logic
+    return process_incoming_message(business, phone, text)
+
+@app.route("/webhook_360/<int:business_id>", methods=["POST"])
+def webhook_360(business_id):
+    business = get_business_by_id(business_id)
+    if not business or (business.get("provider") or "").lower() != "360dialog":
+        print("Unknown or non-360 business:", business_id)
         return "ok", 200
 
-    # Steps
-    if state and state.get("step") == "awaiting_name":
-        state["name"] = text
-        state["step"] = "awaiting_service"
-        send_message(phone, f"Thanks, {text}. Which service would you like? (e.g., haircut, consultation)",business)
+    data = request.get_json(silent=True)
+    print("INCOMING 360:", data)
+
+    try:
+        # 360dialog typical payload: { "messages": [ { "from": "...", "text": { "body": "..." } } ] }
+        message = data["messages"][0]
+        phone = message["from"]
+        text = message.get("text", {}).get("body", "")
+    except Exception as e:
+        print("360 webhook parse error:", e)
         return "ok", 200
 
-    if state and state.get("step") == "awaiting_service":
-        state["service"] = text
-        svc = get_service_info(business["id"], state["service"])
-        send_message(
-            phone,
-            f"Noted: {state['service']} — ${svc['price']:.2f} ({svc['duration']} min)."
-        )
-        state["step"] = "awaiting_date"
-        send_message(phone, "What date would you like? (e.g., 2025-11-10 or 10 Nov)",business)
-        return "ok", 200
-
-
-
-    if state and state.get("step") == "awaiting_date":
-        state["date"] = text
-        state["step"] = "awaiting_time"
-        send_message(phone, "What time? (e.g., 18:00 or 6 PM)",business)
-        return "ok", 200
-
-    if state and state.get("step") == "awaiting_time":
-        if state and state.get("step") == "awaiting_time":
-            # normalize user time
-            norm_time = normalize_time_str(text)
-            if norm_time is None:
-                send_message(phone, "I couldn't understand that time. Please write '4 PM' or '16:00'.",business)
-                return "ok", 200
-
-            state["time"] = norm_time
-            req_date = state.get("date", "")
-            req_time = state.get("time", "")
-
-            # 1) Check for time conflict
-            if is_taken(req_date, req_time):
-                options = suggest_slots(req_date, req_time)
-                if options:
-                    send_message(
-                        phone,
-                        f"❌ That time is already taken.\n"
-                        f"Available nearby: {', '.join(options)}\n"
-                        f"Please choose one or suggest another time." , business
-                    )
-                else:
-                    send_message(
-                        phone,
-                        "❌ That time is taken and I couldn't find alternatives. Please choose another time." , business
-                    )
-                return "ok", 200
-
-            # 2) Fetch service info (price & duration)
-            svc = get_service_info(business["id"], state.get("service", ""))
-            price = svc["price"]
-            duration = svc["duration"]
-
-            # 3) Save
-            save_reservation(
-                business ["id"],
-                phone,
-                state.get("name", ""),
-                state.get("service", ""),
-                req_date,
-                req_time
-            )
-
-            # 4) Confirm to user
-            send_message(
-                phone,
-                f"✅ Reservation confirmed for {state.get('service')} on {req_date} at {req_time}.\n"
-                f"👤 {state.get('name')}\n"
-                f"💵 Total: ${price:.2f}" , business
-            )
-
-            # 5) Add to Google Calendar
-            try:
-                print("GCAL: creating event with", req_date, req_time, duration, "min")
-                create_event(
-                    summary=f"{state.get('service')} – {state.get('name')}",
-                    date_str=req_date,
-                    time_str=req_time,
-                    description=(
-                        f"From: {phone}\n"
-                        f"Service: {state.get('service')}\n"
-                        f"When: {req_date} {req_time}\n"
-                        f"Price: ${price:.2f}"
-                    ),
-                    calendar_id="primary",
-                    duration_min=duration
-                )
-                print("GCAL: event created")
-                send_message(phone, "📅 Added to our Google Calendar.", business)
-            except Exception as e:
-                print("gcal error:", repr(e))
+    return process_incoming_message(business, phone, text)
 
 
 @app.route("/reservations") # dashboard for all the services and the reservations
@@ -492,27 +543,43 @@ def dashboard(business_id):
         services=services,
         reservations=reservations
     )
+
 @app.route("/admin/businesses", methods=["GET", "POST"])
 def admin_businesses():
     conn = get_db_connection()
     c = conn.cursor()
 
     if flask_request.method == "POST":
-        name           = flask_request.form.get("name", "").strip()
+        name            = flask_request.form.get("name", "").strip()
+        provider        = flask_request.form.get("provider", "meta").strip().lower()
         phone_number_id = flask_request.form.get("phone_number_id", "").strip()
-        access_token   = flask_request.form.get("access_token", "").strip()
-        calendar_id    = flask_request.form.get("calendar_id", "primary").strip()
-        timezone       = flask_request.form.get("timezone", "Asia/Beirut").strip()
+        access_token    = flask_request.form.get("access_token", "").strip()
+        api_key         = flask_request.form.get("api_key", "").strip()
+        calendar_id     = flask_request.form.get("calendar_id", "primary").strip()
+        timezone        = flask_request.form.get("timezone", "Asia/Beirut").strip()
 
-        if name and phone_number_id and access_token:
-            c.execute(
-                "INSERT INTO businesses(name, phone_number_id, access_token, calendar_id, timezone) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (name, phone_number_id, access_token, calendar_id, timezone)
-            )
-            conn.commit()
+        if name:
+            if provider == "360dialog":
+                # For 360dialog, only api_key is required (no Meta token / phone_number_id)
+                if api_key:
+                    c.execute(
+                        "INSERT INTO businesses(name, phone_number_id, access_token, calendar_id, timezone, provider, api_key) "
+                        "VALUES (?, '', '', ?, ?, '360dialog', ?)",
+                        (name, calendar_id, timezone, api_key)
+                    )
+                    conn.commit()
+            else:
+                # Default: Meta Cloud API
+                if phone_number_id and access_token:
+                    c.execute(
+                        "INSERT INTO businesses(name, phone_number_id, access_token, calendar_id, timezone, provider, api_key) "
+                        "VALUES (?, ?, ?, ?, ?, 'meta', NULL)",
+                        (name, phone_number_id, access_token, calendar_id, timezone)
+                    )
+                    conn.commit()
 
-    c.execute("SELECT id, name, phone_number_id, timezone FROM businesses ORDER BY id")
+    # List all businesses
+    c.execute("SELECT id, name, phone_number_id, provider, timezone FROM businesses ORDER BY id")
     rows = c.fetchall()
     conn.close()
 
@@ -521,13 +588,22 @@ def admin_businesses():
 
     <h2>Existing businesses</h2>
     <table border="1" cellpadding="6">
-      <tr><th>ID</th><th>Name</th><th>Phone Number ID</th><th>Timezone</th><th>Dashboard</th><th>Services</th></tr>
+      <tr>
+        <th>ID</th>
+        <th>Name</th>
+        <th>Provider</th>
+        <th>Phone Number ID</th>
+        <th>Timezone</th>
+        <th>Dashboard</th>
+        <th>Services</th>
+      </tr>
       {% for b in rows %}
       <tr>
         <td>{{b[0]}}</td>
         <td>{{b[1]}}</td>
-        <td>{{b[2]}}</td>
         <td>{{b[3]}}</td>
+        <td>{{b[2]}}</td>
+        <td>{{b[4]}}</td>
         <td><a href="/dashboard/{{b[0]}}">Dashboard</a></td>
         <td><a href="/admin/{{b[0]}}/services">Manage services</a></td>
       </tr>
@@ -537,14 +613,29 @@ def admin_businesses():
     <h2 style="margin-top:30px;">Add new business</h2>
     <form method="post">
       <p>Name: <input name="name" required></p>
-      <p>Phone Number ID: <input name="phone_number_id" required></p>
-      <p>Access Token: <input name="access_token" style="width:400px;" required></p>
+
+      <p>
+        Provider:
+        <select name="provider">
+          <option value="meta">Meta Cloud API</option>
+          <option value="360dialog">360dialog</option>
+        </select>
+      </p>
+
+      <p>Phone Number ID (Meta only): <input name="phone_number_id"></p>
+      <p>Access Token (Meta only): <input name="access_token" style="width:400px;"></p>
+
+      <p>360dialog API Key (if provider is 360dialog): <input name="api_key" style="width:400px;"></p>
+
       <p>Calendar ID: <input name="calendar_id" value="primary"></p>
       <p>Timezone: <input name="timezone" value="Asia/Beirut"></p>
+
       <p><button type="submit">Add business</button></p>
     </form>
     """
+
     return render_template_string(html, rows=rows)
+
 
 @app.route("/admin/<int:business_id>/services", methods=["GET", "POST"])
 def admin_services(business_id):

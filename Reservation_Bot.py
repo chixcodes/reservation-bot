@@ -203,24 +203,27 @@ def send_message(to, text, business):
 
 def process_incoming_message(business, phone, text):
     """
-    Shared conversation logic for both Meta and 360dialog webhooks.
+    Shared conversation logic for Meta Cloud API webhooks.
     """
     global user_state
 
     t = text.strip()
     lt = t.lower()
 
-    # user_state key includes business_id so same phone can talk to multiple businesses
     key = (business["id"], phone)
     state = user_state.get(key)
 
-    # booking intent
+    # -------------------------------
+    # START BOOKING
+    # -------------------------------
     if lt.startswith("book") or "book" in lt or "appointment" in lt or "reserve" in lt:
         user_state[key] = {"step": "awaiting_name"}
         send_message(phone, "Sure — what is your full name?", business)
         return "ok", 200
 
-    # cancel intent
+    # -------------------------------
+    # CANCEL BOOKING
+    # -------------------------------
     if "cancel" in lt or "delete" in lt:
         conn = get_db_connection()
         c = conn.cursor()
@@ -231,35 +234,55 @@ def process_incoming_message(business, phone, text):
         send_message(phone, "✅ All reservations under your number have been cancelled.", business)
         return "ok", 200
 
-    # multi-step flow
+    # -------------------------------
+    # STEP 1 – NAME
+    # -------------------------------
     if state and state.get("step") == "awaiting_name":
         state["name"] = t
         state["step"] = "awaiting_service"
         send_message(phone, f"Thanks, {t}. Which service would you like? (e.g., haircut, consultation)", business)
         return "ok", 200
 
+    # -------------------------------
+    # STEP 2 – SERVICE
+    # -------------------------------
     if state and state.get("step") == "awaiting_service":
         lt = t.lower()
-        normalized = t  # default = what user wrote
+
+        # normalize service name
+        normalized = t
         for kw, canonical in SERVICE_KEYWORDS.items():
             if kw in lt:
                 normalized = canonical
                 break
-            state["service"] = normalized
 
-        send_message(phone, "What date would you like? (e.g., 2025-11-20 or 20 Nov)", business)
+        state["service"] = normalized
+        state["step"] = "awaiting_date"
+
+        send_message(phone, f"Great — {normalized}. What date would you like? (e.g., 20 Nov or 2025-11-20)", business)
         return "ok", 200
 
+    # -------------------------------
+    # STEP 3 – DATE
+    # -------------------------------
     if state and state.get("step") == "awaiting_date":
         state["date"] = t
         state["step"] = "awaiting_time"
-        send_message(phone, "What time? (e.g., 16:00 or 4 PM)", business)
+        send_message(phone, "Perfect — and what time? (e.g., 16:00 or 4 PM)", business)
         return "ok", 200
 
+    # -------------------------------
+    # STEP 4 – TIME (final)
+    # -------------------------------
     if state and state.get("step") == "awaiting_time":
         state["time"] = t
 
-        # save reservation
+        # GET SERVICE INFO
+        service_info = get_service_info(business["id"], state["service"])
+        price = service_info["price"]
+        duration = service_info["duration"]
+
+        # SAVE RESERVATION
         save_reservation(
             business["id"],
             phone,
@@ -269,36 +292,59 @@ def process_incoming_message(business, phone, text):
             state.get("time", "")
         )
 
-        # optional: Google Calendar
-        # save reservation...
-
-        # 1) Send confirmation first
-        send_message(
-            phone,
-            f"✅ Reservation confirmed for {state.get('service')} on {state.get('date')} at {state.get('time')}. "
-            f"Thank you, {state.get('name')}!",
-            business
+        # ---- CONFIRMATION FIRST ----
+        confirmation_msg = (
+            f"✅ Reservation confirmed!\n\n"
+            f"📌 *Service:* {state.get('service')}\n"
+            f"💵 *Price:* ${price:.2f}\n"
+            f"⏱ *Duration:* {duration} minutes\n"
+            f"📅 *Date:* {state.get('date')}\n"
+            f"⏰ *Time:* {state.get('time')}\n\n"
+            f"Thank you, {state.get('name')}!"
         )
+        send_message(phone, confirmation_msg, business)
 
-        # 2) Then try to add to calendar
+        # ---- GOOGLE CALENDAR ----
         try:
             summary = f"{state.get('service')} – {state.get('name')}"
-            description = f"From: {phone}\nService: {state.get('service')}\nWhen: {state.get('date')} {state.get('time')}"
-            create_event(summary, state.get("date", ""), state.get("time", ""),
-                         description=description,
-                         calendar_id=business["calendar_id"],
-                         duration_min=45)
-            send_message(phone, "📅 Also added to our Google Calendar.", business)
+            description = (
+                f"From: {phone}\n"
+                f"Service: {state.get('service')}\n"
+                f"Price: {price}\n"
+                f"Duration: {duration} min\n"
+                f"When: {state.get('date')} {state.get('time')}"
+            )
+
+            create_event(
+                summary,
+                state.get("date", ""),
+                state.get("time", ""),
+                description=description,
+                calendar_id=business["calendar_id"],
+                duration_min=duration
+            )
+
+            send_message(phone, "📅 Added to our Google Calendar.", business)
+
         except Exception as e:
             print("gcal error:", e)
 
-    # fallback
+        # Clear state
+        user_state.pop(key, None)
+
+        return "ok", 200
+
+    # -------------------------------
+    # FALLBACK
+    # -------------------------------
     send_message(
         phone,
         "Sorry, I didn't understand. Type 'book' to create a reservation or 'cancel' to cancel.",
         business
     )
     return "ok", 200
+
+
 
 
 def save_reservation (business_id, phone, name, service, date, time_):

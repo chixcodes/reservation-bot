@@ -173,43 +173,26 @@ user_state = {}  # phone -> step data
 
 def send_message(to, text, business):
     """
-    Send a WhatsApp message via either Meta Cloud API or 360dialog,
-    depending on business['provider'].
+    Send a WhatsApp message via Meta Cloud API only.
     """
-    provider = (business.get("provider") or "meta").lower()
-
-    if provider == "360dialog":
-        # 360dialog API
-        url = "https://waba-v1.360dialog.io/messages"
-        headers = {
-            "D360-API-KEY": business.get("api_key", ""),
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "recipient_type": "individual",
-            "to": to,
-            "type": "text",
-            "text": {"body": text}
-        }
-    else:
-        # Default: Meta Cloud API
-        url = f"https://graph.facebook.com/v21.0/{business['phone_number_id']}/messages"
-        headers = {
-            "Authorization": f"Bearer {business['access_token']}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "messaging_product": "whatsapp",
-            "to": to,
-            "type": "text",
-            "text": {"body": text}
-        }
+    url = f"https://graph.facebook.com/v21.0/{business['phone_number_id']}/messages"
+    headers = {
+        "Authorization": f"Bearer {business['access_token']}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "text",
+        "text": {"body": text}
+    }
 
     try:
         r = requests.post(url, headers=headers, json=payload, timeout=15)
-        print("send_message:", provider, r.status_code, r.text)
+        print("send_message: meta", r.status_code, r.text)
     except Exception as e:
-        print("send_message error:", provider, e)
+        print("send_message error (meta):", e)
+
 
 def process_incoming_message(business, phone, text):
     """
@@ -442,27 +425,6 @@ def webhook():
     # Hand off to the shared conversation logic
     return process_incoming_message(business, phone, text)
 
-@app.route("/webhook_360/<int:business_id>", methods=["POST"])
-def webhook_360(business_id):
-    business = get_business_by_id(business_id)
-    if not business or (business.get("provider") or "").lower() != "360dialog":
-        print("Unknown or non-360 business:", business_id)
-        return "ok", 200
-
-    data = request.get_json(silent=True)
-    print("INCOMING 360:", data)
-
-    try:
-        # 360dialog typical payload: { "messages": [ { "from": "...", "text": { "body": "..." } } ] }
-        message = data["messages"][0]
-        phone = message["from"]
-        text = message.get("text", {}).get("body", "")
-    except Exception as e:
-        print("360 webhook parse error:", e)
-        return "ok", 200
-
-    return process_incoming_message(business, phone, text)
-
 
 @app.route("/reservations") # dashboard for all the services and the reservations
 def reservations_page():
@@ -545,43 +507,25 @@ def dashboard(business_id):
     )
 
 @app.route("/admin/businesses", methods=["GET", "POST"])
-def admin_businesses():
+def admin_businesses(rows=None):
     conn = get_db_connection()
     c = conn.cursor()
 
     if flask_request.method == "POST":
         name            = flask_request.form.get("name", "").strip()
-        provider        = flask_request.form.get("provider", "meta").strip().lower()
         phone_number_id = flask_request.form.get("phone_number_id", "").strip()
         access_token    = flask_request.form.get("access_token", "").strip()
-        api_key         = flask_request.form.get("api_key", "").strip()
         calendar_id     = flask_request.form.get("calendar_id", "primary").strip()
         timezone        = flask_request.form.get("timezone", "Asia/Beirut").strip()
 
-        if name:
-            if provider == "360dialog":
-                # For 360dialog, only api_key is required (no Meta token / phone_number_id)
-                if api_key:
-                    c.execute(
-                        "INSERT INTO businesses(name, phone_number_id, access_token, calendar_id, timezone, provider, api_key) "
-                        "VALUES (?, '', '', ?, ?, '360dialog', ?)",
-                        (name, calendar_id, timezone, api_key)
-                    )
-                    conn.commit()
-            else:
-                # Default: Meta Cloud API
-                if phone_number_id and access_token:
-                    c.execute(
-                        "INSERT INTO businesses(name, phone_number_id, access_token, calendar_id, timezone, provider, api_key) "
-                        "VALUES (?, ?, ?, ?, ?, 'meta', NULL)",
-                        (name, phone_number_id, access_token, calendar_id, timezone)
-                    )
-                    conn.commit()
+        if name and phone_number_id and access_token:
+            c.execute(
+                "INSERT INTO businesses(name, phone_number_id, access_token, calendar_id, timezone) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (name, phone_number_id, access_token, calendar_id, timezone)
+            )
+            conn.commit()
 
-    # List all businesses
-    c.execute("SELECT id, name, phone_number_id, provider, timezone FROM businesses ORDER BY id")
-    rows = c.fetchall()
-    conn.close()
 
     html = """
     <h1>Admin — Businesses</h1>

@@ -210,10 +210,12 @@ def ai_pick_service(business, user_text):
     Returns a service name (string) or None if it fails.
     """
     if not OPENROUTER_API_KEY:
+        print("ai_pick_service: no OPENROUTER_API_KEY set")
         return None  # AI not configured
 
     services = get_service_names_for_business(business["id"])
     if not services:
+        print("ai_pick_service: no services configured for business", business["id"])
         return None
 
     services_str = ", ".join(services)
@@ -240,12 +242,24 @@ def ai_pick_service(business, user_text):
                 "response_format": {"type": "json_object"},
                 "messages": [
                     {"role": "system", "content": system_msg},
-                    {"role": "user", "content": user_msg},
+                    {"role": "user",   "content": user_msg},
                 ],
             },
             timeout=12,
         )
+
+        print("ai_pick_service status:", resp.status_code)
+        # If not 2xx, log body and bail
+        if not resp.ok:
+            print("ai_pick_service body:", resp.text)
+            return None
+
         data = resp.json()
+        # Defensive: ensure choices exist
+        if "choices" not in data or not data["choices"]:
+            print("ai_pick_service: no choices in response:", data)
+            return None
+
         content = data["choices"][0]["message"]["content"]
         obj = json.loads(content)
         service = obj.get("service")

@@ -504,68 +504,127 @@ def reservations_page():
     </table>
     """
     return render_template_string(html, rows=rows)
+
 @app.route("/dashboard/<int:business_id>")
 def dashboard(business_id):
     conn = get_db_connection()
     c = conn.cursor()
 
-    # Fetch business info
+    # Get business info
     c.execute("SELECT name FROM businesses WHERE id=?", (business_id,))
-    b = c.fetchone()
-    if not b:
-        return f"No business found with ID {business_id}", 404
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return "Unknown business", 404
+    business_name = row[0]
 
-    business_name = b[0]
-
-    # Fetch services for this business
-    c.execute("SELECT id, name, price, duration_min FROM services WHERE business_id=? ORDER BY id", (business_id,))
-    services = c.fetchall()
-
-    # Fetch recent reservations for this business
+    # Upcoming reservations (today and later)
     c.execute("""
-        SELECT id, phone, name, service, date, time, created_at
+        SELECT name, service, date, time, phone
         FROM reservations
         WHERE business_id=?
-        ORDER BY created_at DESC
-        LIMIT 20
+        ORDER BY date, time
     """, (business_id,))
     reservations = c.fetchall()
+
+    # Services for this business
+    c.execute("""
+        SELECT name, price, duration_min
+        FROM services
+        WHERE business_id=?
+        ORDER BY name
+    """, (business_id,))
+    services = c.fetchall()
 
     conn.close()
 
     html = """
-    <h1>Dashboard — {{ business_name }}</h1>
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <title>{{ business_name }} – Dashboard</title>
+      <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background:#f7f7f7; }
+        h1 { margin-bottom: 5px; }
+        h2 { margin-top: 30px; }
+        .container { max-width: 1000px; margin: 0 auto; background:#fff; padding:20px; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,0.05); }
+        table { border-collapse: collapse; width: 100%; margin-top:10px; }
+        th, td { border: 1px solid #ddd; padding: 8px; font-size:14px; }
+        th { background-color: #f0f0f0; text-align:left; }
+        .subtle { color:#666; font-size: 13px; }
+        .tag { display:inline-block; padding:2px 6px; border-radius:4px; background:#eee; font-size:12px; }
+        .flex { display:flex; gap:40px; align-items:flex-start; }
+        .column { flex:1; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <h1>{{ business_name }} — Dashboard</h1>
+        <p class="subtle">Business ID: {{ business_id }}</p>
 
-    <h2>Services</h2>
-    <table border="1" cellpadding="6">
-      <tr><th>ID</th><th>Name</th><th>Price</th><th>Duration (min)</th></tr>
-      {% for s in services %}
-        <tr><td>{{s[0]}}</td><td>{{s[1]}}</td><td>{{s[2]}}</td><td>{{s[3]}}</td></tr>
-      {% endfor %}
-    </table>
+        <div class="flex">
+          <div class="column">
+            <h2>Upcoming reservations</h2>
+            {% if reservations %}
+              <table>
+                <tr>
+                  <th>Name</th>
+                  <th>Service</th>
+                  <th>Date</th>
+                  <th>Time</th>
+                  <th>Phone</th>
+                </tr>
+                {% for r in reservations %}
+                <tr>
+                  <td>{{ r[0] }}</td>
+                  <td>{{ r[1] }}</td>
+                  <td>{{ r[2] }}</td>
+                  <td>{{ r[3] }}</td>
+                  <td>{{ r[4] }}</td>
+                </tr>
+                {% endfor %}
+              </table>
+            {% else %}
+              <p class="subtle">No reservations yet.</p>
+            {% endif %}
+          </div>
 
-    <h2 style="margin-top:30px;">Recent Reservations</h2>
-    <table border="1" cellpadding="6">
-      <tr>
-        <th>ID</th><th>Phone</th><th>Name</th><th>Service</th>
-        <th>Date</th><th>Time</th><th>Created</th>
-      </tr>
-      {% for r in reservations %}
-        <tr>
-          <td>{{r[0]}}</td><td>{{r[1]}}</td><td>{{r[2]}}</td><td>{{r[3]}}</td>
-          <td>{{r[4]}}</td><td>{{r[5]}}</td><td>{{r[6]}}</td>
-        </tr>
-      {% endfor %}
-    </table>
-
+          <div class="column">
+            <h2>Services</h2>
+            {% if services %}
+              <table>
+                <tr>
+                  <th>Service</th>
+                  <th>Price</th>
+                  <th>Duration</th>
+                </tr>
+                {% for s in services %}
+                <tr>
+                  <td>{{ s[0] }}</td>
+                  <td>${{ "%.2f"|format(s[1]) }}</td>
+                  <td>{{ s[2] }} min</td>
+                </tr>
+                {% endfor %}
+              </table>
+            {% else %}
+              <p class="subtle">No services configured yet.</p>
+            {% endif %}
+            <p class="subtle" style="margin-top:10px;">
+              To edit services, go to your admin panel (for now: /admin/businesses and /admin/&lt;id&gt;/services).
+            </p>
+          </div>
+        </div>
+      </div>
+    </body>
+    </html>
     """
+    return render_template_string(html,
+                                  business_name=business_name,
+                                  business_id=business_id,
+                                  reservations=reservations,
+                                  services=services)
 
-    return render_template_string(
-        html,
-        business_name=business_name,
-        services=services,
-        reservations=reservations
-    )
 
 @app.route("/admin/businesses", methods=["GET", "POST"])
 def admin_businesses(rows=None):

@@ -9,6 +9,13 @@ from gcal import create_event  # <-- requires gcal.py from earlier steps
 from datetime import datetime, timedelta
 from flask import request as flask_request  # at the top if not already
 
+SERVICE_KEYWORDS = {
+    "haircut": "Haircut",
+    "beard": "Beard Trim",
+    "color": "Hair Coloring",
+}
+
+
 def get_business_by_phone_number_id(phone_number_id):
     conn = get_db_connection()
     c = conn.cursor()
@@ -232,8 +239,14 @@ def process_incoming_message(business, phone, text):
         return "ok", 200
 
     if state and state.get("step") == "awaiting_service":
-        state["service"] = t
-        state["step"] = "awaiting_date"
+        lt = t.lower()
+        normalized = t  # default = what user wrote
+        for kw, canonical in SERVICE_KEYWORDS.items():
+            if kw in lt:
+                normalized = canonical
+                break
+            state["service"] = normalized
+
         send_message(phone, "What date would you like? (e.g., 2025-11-20 or 20 Nov)", business)
         return "ok", 200
 
@@ -257,6 +270,17 @@ def process_incoming_message(business, phone, text):
         )
 
         # optional: Google Calendar
+        # save reservation...
+
+        # 1) Send confirmation first
+        send_message(
+            phone,
+            f"✅ Reservation confirmed for {state.get('service')} on {state.get('date')} at {state.get('time')}. "
+            f"Thank you, {state.get('name')}!",
+            business
+        )
+
+        # 2) Then try to add to calendar
         try:
             summary = f"{state.get('service')} – {state.get('name')}"
             description = f"From: {phone}\nService: {state.get('service')}\nWhen: {state.get('date')} {state.get('time')}"
@@ -267,15 +291,6 @@ def process_incoming_message(business, phone, text):
             send_message(phone, "📅 Also added to our Google Calendar.", business)
         except Exception as e:
             print("gcal error:", e)
-
-        send_message(
-            phone,
-            f"✅ Reservation confirmed for {state.get('service')} on {state.get('date')} at {state.get('time')}. "
-            f"Thank you, {state.get('name')}!",
-            business
-        )
-        user_state.pop(key, None)
-        return "ok", 200
 
     # fallback
     send_message(

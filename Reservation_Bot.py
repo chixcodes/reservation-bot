@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from gcal import create_event  # <-- requires gcal.py from earlier steps
 from datetime import datetime, timedelta
 from flask import request as flask_request  # at the top if not already
+import json
 
 SERVICE_KEYWORDS = {
     "haircut": "Haircut",
@@ -169,6 +170,8 @@ def get_db_connection():
 
 # ------------------ Config (.env) ------------------
 load_dotenv()
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o")  # you can change later
 ACCESS_TOKEN    = os.getenv("ACCESS_TOKEN")
 VERIFY_TOKEN    = os.getenv("VERIFY_TOKEN", "khoury123")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
@@ -199,6 +202,59 @@ def send_message(to, text, business):
         print("send_message: meta", r.status_code, r.text)
     except Exception as e:
         print("send_message error (meta):", e)
+
+def ai_pick_service(business, user_text):
+    """
+    Ask OpenRouter to pick the best matching service name
+    from this business's services list.
+    Returns a service name (string) or None if it fails.
+    """
+    if not OPENROUTER_API_KEY:
+        return None  # AI not configured
+
+    services = get_service_names_for_business(business["id"])
+    if not services:
+        return None
+
+    services_str = ", ".join(services)
+
+    system_msg = (
+        "You help map customer booking messages to a single service name.\n"
+        "You are given a list of valid services for this business.\n"
+        "Always answer with pure JSON, like: {\"service\": \"Haircut\"}.\n"
+        "If you are not sure, use the closest match.\n"
+        f"Valid services: {services_str}"
+    )
+
+    user_msg = f"Customer message: {user_text}"
+
+    try:
+        resp = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": OPENROUTER_MODEL,
+                "response_format": {"type": "json_object"},
+                "messages": [
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": user_msg},
+                ],
+            },
+            timeout=12,
+        )
+        data = resp.json()
+        content = data["choices"][0]["message"]["content"]
+        obj = json.loads(content)
+        service = obj.get("service")
+        if isinstance(service, str) and service.strip():
+            return service.strip()
+    except Exception as e:
+        print("ai_pick_service error:", e)
+
+    return None
 
 
 def process_incoming_message(business, phone, text):
@@ -247,20 +303,30 @@ def process_incoming_message(business, phone, text):
     # STEP 2 – SERVICE
     # -------------------------------
     if state and state.get("step") == "awaiting_service":
-        lt = t.lower()
+        # 1) Try AI to pick best service
+        ai_service = ai_pick_service(business, t)
 
-        # normalize service name
-        normalized = t
-        for kw, canonical in SERVICE_KEYWORDS.items():
-            if kw in lt:
-                normalized = canonical
-                break
+        if ai_service:
+            normalized = ai_service
+        else:
+            # 2) Fallback: keyword-based normalization
+            lt2 = t.lower()
+            normalized = t
+            for kw, canonical in SERVICE_KEYWORDS.items():
+                if kw in lt2:
+                    normalized = canonical
+                    break
 
         state["service"] = normalized
         state["step"] = "awaiting_date"
 
-        send_message(phone, f"Great — {normalized}. What date would you like? (e.g., 20 Nov or 2025-11-20)", business)
+        send_message(
+            phone,
+            f"Great — {normalized}. What date would you like? (e.g., 20 Nov or 2025-11-20)",
+            business
+        )
         return "ok", 200
+
 
     # -------------------------------
     # STEP 3 – DATE
@@ -371,6 +437,14 @@ def get_service_info(business_id, service_name):
     if row:
         return {"price": float(row[0]), "duration": int(row[1])}
     return {"price": 0.0, "duration": 45}
+
+def get_service_names_for_business(business_id):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT name FROM services WHERE business_id=?", (business_id,))
+    rows = c.fetchall()
+    conn.close()
+    return [r[0] for r in rows]
 
 
 

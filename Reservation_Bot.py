@@ -342,29 +342,20 @@ def process_incoming_message(business, phone, text):
     # -------------------------------
     # STEP 2 – SERVICE
     # -------------------------------
+    # -------------------------------
+    # STEP 2 – SERVICE (keywords only for now)
+    # -------------------------------
     if state and state.get("step") == "awaiting_service":
         lt2 = t.lower()
 
-        # 1) Try keyword-based normalization FIRST (Arabic/English/French)
-        normalized = None
+        normalized = t  # default to raw
         for kw, canonical in SERVICE_KEYWORDS.items():
             if kw.lower() in lt2:
                 normalized = canonical
                 break
 
-        # 2) If no keyword match, try AI
-        ai_service = None
-        if normalized is None:
-            ai_service = ai_pick_service(business, t)
-            if ai_service:
-                normalized = ai_service
-
-        # 3) If still nothing, just keep raw text
-        if normalized is None:
-            normalized = t
-
-        # (optional) Debug print for you
-        print("SERVICE STEP raw:", t, "ai_service:", ai_service, "normalized:", normalized)
+        # debug log for you
+        print("SERVICE STEP raw:", t, "normalized:", normalized)
 
         state["service"] = normalized
         state["step"] = "awaiting_date"
@@ -375,6 +366,7 @@ def process_incoming_message(business, phone, text):
             business
         )
         return "ok", 200
+
 
 
 

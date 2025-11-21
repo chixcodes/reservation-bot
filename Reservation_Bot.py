@@ -11,9 +11,34 @@ from flask import request as flask_request  # at the top if not already
 import json
 
 SERVICE_KEYWORDS = {
+    # English
     "haircut": "Haircut",
+    "cut": "Haircut",
+    "coupe": "Haircut",
+
     "beard": "Beard Trim",
+    "barbe": "Beard Trim",
+    "shave": "Beard Trim",
+
     "color": "Hair Coloring",
+    "colour": "Hair Coloring",
+    "dye": "Hair Coloring",
+
+    # Arabic – Haircut
+    "قص شعر": "Haircut",
+    "قصة شعر": "Haircut",
+    "حلاقة شعر": "Haircut",
+    "حلاقة": "Haircut",
+
+    # Arabic – Beard
+    "ذقن": "Beard Trim",
+    "تهذيب ذقن": "Beard Trim",
+    "حلاقة دقن": "Beard Trim",
+
+    # Arabic – Coloring
+    "صبغ": "Hair Coloring",
+    "صبغة": "Hair Coloring",
+    "صبغ شعر": "Hair Coloring",
 }
 
 
@@ -222,9 +247,10 @@ def ai_pick_service(business, user_text):
 
     system_msg = (
         "You help map customer booking messages to a single service name.\n"
+        "The customer may write in Arabic, English, or French, using slang.\n"
         "You are given a list of valid services for this business.\n"
         "Always answer with pure JSON, like: {\"service\": \"Haircut\"}.\n"
-        "If you are not sure, use the closest match.\n"
+        "If you are not sure, use the closest match from the list.\n"
         f"Valid services: {services_str}"
     )
 

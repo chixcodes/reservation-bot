@@ -355,7 +355,40 @@ def process_incoming_message(business, phone, text):
     # STEP 4 – TIME (final)
     # -------------------------------
     if state and state.get("step") == "awaiting_time":
-        state["time"] = t
+        raw_time = t
+        raw_date = state.get("date", "")
+
+        # 1) Normalize time like "3al 6 please" -> "06:00"
+        norm_time = normalize_time_str(raw_time)
+        if not norm_time:
+            send_message(
+                phone,
+                "Sorry, I couldn't understand the time. Please send something like 16:00 or 4 PM.",
+                business
+            )
+            return "ok", 200
+
+        # 2) Check if this slot is already taken
+        if is_taken(raw_date, norm_time):
+            suggestions = suggest_slots(raw_date, norm_time)
+            if suggestions:
+                msg = (
+                    f"❌ Sorry, {norm_time} on {raw_date} is already taken.\n\n"
+                    f"Available times close to that are:\n"
+                    + "\n".join(f"• {s}" for s in suggestions)
+                    + "\n\nPlease choose one of these times."
+                )
+            else:
+                msg = (
+                    f"❌ Sorry, {norm_time} on {raw_date} is already taken, and I couldn't find other free slots.\n"
+                    "Please send another time or date."
+                )
+            send_message(phone, msg, business)
+            # keep step as awaiting_time so they can answer with a new time
+            return "ok", 200
+
+        # 3) Save the normalized time
+        state["time"] = norm_time
 
         # GET SERVICE INFO
         service_info = get_service_info(business["id"], state["service"])
@@ -466,12 +499,11 @@ def normalize_time_str(tstr):
     # clean basic stuff
     tstr = tstr.strip().upper().replace(".", "")
 
-    # pick the first token that has a digit (e.g. from "16:30 PLEASE")
+    # pick the *last* token that has a digit (e.g. "3AL 6 PLEASE" -> "6")
     candidate = None
     for part in tstr.split():
         if any(ch.isdigit() for ch in part):
-            candidate = part
-            break
+            candidate = part  # keep updating -> last digit token wins
     if candidate is None:
         return None
     tstr = candidate
@@ -488,6 +520,7 @@ def normalize_time_str(tstr):
         except:
             continue
     return None
+
 
 
 
@@ -554,6 +587,46 @@ def webhook():
     # Handle incoming messages (POST)
     data = request.get_json(silent=True)
     print("INCOMING META:", data)
+    # ----- ignore non-message events (statuses, etc.) -----
+    try:
+        entry  = data["entry"][0]
+        change = entry["changes"][0]
+        value  = change["value"]
+    except Exception as e:
+        print("Meta webhook parse error:", e)
+        return "ok", 200
+
+    # Ignore delivery/read/status events
+    if "statuses" in value:
+        return "ok", 200
+
+    # Ignore if there is no real incoming message
+    if "messages" not in value:
+        return "ok", 200
+
+    messages = value["messages"]
+    if not messages:
+        return "ok", 200
+
+    message = messages[0]
+
+    # Ignore non-text messages (stickers, images, etc.) for now
+    if message.get("type") != "text":
+        return "ok", 200
+
+    # Now we are sure it's a real inbound text
+    phone = message.get("from")
+    text  = message.get("text", {}).get("body", "").strip()
+
+    phone_number_id = value["metadata"]["phone_number_id"]
+    business = get_business_by_phone_number_id(phone_number_id)
+    if not business:
+        # fallback default business id=1
+        business = get_business_by_id(1)
+
+    # delegate to conversation logic
+    return process_incoming_message(business, phone, text)
+
 
     try:
         # pick the business based on phone_number_id from Meta payload

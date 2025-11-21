@@ -343,19 +343,28 @@ def process_incoming_message(business, phone, text):
     # STEP 2 – SERVICE
     # -------------------------------
     if state and state.get("step") == "awaiting_service":
-        # 1) Try AI to pick best service
-        ai_service = ai_pick_service(business, t)
+        lt2 = t.lower()
 
-        if ai_service:
-            normalized = ai_service
-        else:
-            # 2) Fallback: keyword-based normalization
-            lt2 = t.lower()
+        # 1) Try keyword-based normalization FIRST (Arabic/English/French)
+        normalized = None
+        for kw, canonical in SERVICE_KEYWORDS.items():
+            if kw.lower() in lt2:
+                normalized = canonical
+                break
+
+        # 2) If no keyword match, try AI
+        ai_service = None
+        if normalized is None:
+            ai_service = ai_pick_service(business, t)
+            if ai_service:
+                normalized = ai_service
+
+        # 3) If still nothing, just keep raw text
+        if normalized is None:
             normalized = t
-            for kw, canonical in SERVICE_KEYWORDS.items():
-                if kw in lt2:
-                    normalized = canonical
-                    break
+
+        # (optional) Debug print for you
+        print("SERVICE STEP raw:", t, "ai_service:", ai_service, "normalized:", normalized)
 
         state["service"] = normalized
         state["step"] = "awaiting_date"
@@ -366,6 +375,7 @@ def process_incoming_message(business, phone, text):
             business
         )
         return "ok", 200
+
 
 
     # -------------------------------

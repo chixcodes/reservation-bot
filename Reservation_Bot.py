@@ -9,6 +9,8 @@ from gcal import create_event  # <-- requires gcal.py from earlier steps
 from datetime import datetime, timedelta
 from flask import request as flask_request  # at the top if not already
 import json
+from werkzeug.security import generate_password_hash, check_password_hash
+from flask import session, redirect, url_for
 
 SERVICE_KEYWORDS = {
     # English
@@ -83,6 +85,7 @@ def get_business_by_id(business_id):
 
 # ------------------ Flask ------------------
 app = Flask(__name__)
+app.secret_key = os.getenv("FLASK_SECRET", "dev-secret-change-me")
 
 # ------------------ Database (safe path) ------------------
 DB_DIR  = r"C:\Users\Public\ReservationBotData"   # writable on Windows
@@ -121,6 +124,15 @@ def init_db():
         c.execute("ALTER TABLE businesses ADD COLUMN api_key TEXT")
     except sqlite3.OperationalError:
         pass
+    try:
+        c.execute("ALTER TABLE businesses ADD COLUMN login_email TEXT")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        c.execute("ALTER TABLE businesses ADD COLUMN password_hash TEXT")
+    except sqlite3.OperationalError:
+        pass
 
     # Ensure default business with id = 1
     c.execute("SELECT id FROM businesses WHERE id = 1")
@@ -156,6 +168,11 @@ def init_db():
     except sqlite3.OperationalError:
         # column already exists, ignore
         pass
+    # add status column if it doesn't exist
+    try:
+        c.execute("ALTER TABLE reservations ADD COLUMN status TEXT DEFAULT 'active'")
+    except sqlite3.OperationalError:
+        pass
 
     # 3) Services table (add business_id with default 1)
     c.execute("""
@@ -184,6 +201,16 @@ def init_db():
                 ("consultation", 0.0, 30),
             ]
         )
+    # USERS TABLE (for admin login)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            business_id INTEGER,
+            email TEXT UNIQUE,
+            password_hash TEXT,
+            FOREIGN KEY (business_id) REFERENCES businesses(id)
+        )
+    """)
 
     conn.commit()
     conn.close()
@@ -247,7 +274,7 @@ def ai_pick_service(business, user_text):
 
     system_msg = (
         "You help map customer booking messages to a single service name.\n"
-        "The customer may write in Arabic, English, or French, using slang.\n"
+        "The customer may write in Arabic, English, or French, with slang.\n"
         "You are given a list of valid services for this business.\n"
         "Always answer with pure JSON, like: {\"service\": \"Haircut\"}.\n"
         "If you are not sure, use the closest match from the list.\n"
@@ -275,13 +302,11 @@ def ai_pick_service(business, user_text):
         )
 
         print("ai_pick_service status:", resp.status_code)
-        # If not 2xx, log body and bail
         if not resp.ok:
             print("ai_pick_service body:", resp.text)
             return None
 
         data = resp.json()
-        # Defensive: ensure choices exist
         if "choices" not in data or not data["choices"]:
             print("ai_pick_service: no choices in response:", data)
             return None
@@ -295,6 +320,7 @@ def ai_pick_service(business, user_text):
         print("ai_pick_service error:", e)
 
     return None
+
 
 
 def process_incoming_message(business, phone, text):
@@ -339,23 +365,32 @@ def process_incoming_message(business, phone, text):
         send_message(phone, f"Thanks, {t}. Which service would you like? (e.g., haircut, consultation)", business)
         return "ok", 200
 
-    # -------------------------------
-    # STEP 2 – SERVICE
-    # -------------------------------
-    # -------------------------------
-    # STEP 2 – SERVICE (keywords only for now)
+
+    # STEP 2 – SERVICE (keywords + AI fallback)
     # -------------------------------
     if state and state.get("step") == "awaiting_service":
         lt2 = t.lower()
 
-        normalized = t  # default to raw
+        # 1) Try keyword-based normalization FIRST (Arabic/English/French)
+        normalized = None
         for kw, canonical in SERVICE_KEYWORDS.items():
             if kw.lower() in lt2:
                 normalized = canonical
                 break
 
+        ai_service = None
+        # 2) If no keyword match, try AI (only if configured)
+        if normalized is None and OPENROUTER_API_KEY:
+            ai_service = ai_pick_service(business, t)
+            if ai_service:
+                normalized = ai_service
+
+        # 3) If still nothing, just keep raw text
+        if normalized is None:
+            normalized = t
+
         # debug log for you
-        print("SERVICE STEP raw:", t, "normalized:", normalized)
+        print("SERVICE STEP raw:", t, "ai_service:", ai_service, "normalized:", normalized)
 
         state["service"] = normalized
         state["step"] = "awaiting_date"
@@ -366,8 +401,6 @@ def process_incoming_message(business, phone, text):
             business
         )
         return "ok", 200
-
-
 
 
     # -------------------------------
@@ -489,16 +522,17 @@ def process_incoming_message(business, phone, text):
 
 
 def save_reservation (business_id, phone, name, service, date, time_):
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute(
-            "INSERT INTO reservations (business_id, phone, name, service, date, time) VALUES (?, ?, ?, ?, ?, ?)",
-            (business_id, phone, name, service, date, time_)
-        )
-        conn.commit()
-        conn.close()
-        print("SAVED:", phone, name, service, date, time_)
-from datetime import datetime, timedelta
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO reservations (business_id, phone, name, service, date, time, status) "
+        "VALUES (?, ?, ?, ?, ?, ?, 'active')",
+        (business_id, phone, name, service, date, time_)
+    )
+    conn.commit()
+    conn.close()
+    print("SAVED:", phone, name, service, date, time_)
+
 
 def get_service_info(business_id, service_name):
     conn = get_db_connection()
@@ -889,6 +923,48 @@ def admin_businesses(rows=None):
 
     return render_template_string(html, rows=rows)
 
+from flask import redirect, url_for
+
+@app.route("/admin/<int:business_id>/cancel/<int:res_id>", methods=["POST"])
+def cancel_reservation(business_id, res_id):
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    # Get reservation details
+    c.execute(
+        "SELECT phone, name, service, date, time FROM reservations "
+        "WHERE id=? AND business_id=? AND status='active'",
+        (res_id, business_id)
+    )
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return redirect(url_for("admin_reservations", business_id=business_id))
+
+    phone, name, service, date_str, time_str = row
+
+    # Mark as cancelled
+    c.execute(
+        "UPDATE reservations SET status='cancelled' WHERE id=?",
+        (res_id,)
+    )
+    conn.commit()
+    conn.close()
+
+    # Notify customer
+    business = get_business_by_id(business_id)
+    if business:
+        msg = (
+            f"⚠️ Your reservation has been cancelled by the business.\n\n"
+            f"📌 Service: {service}\n"
+            f"📅 Date: {date_str}\n"
+            f"⏰ Time: {time_str}\n\n"
+            "If this is a mistake, please contact us to rebook."
+        )
+        send_message(phone, msg, business)
+
+    return redirect(url_for("admin_reservations", business_id=business_id))
+
 
 @app.route("/admin/<int:business_id>/services", methods=["GET", "POST"])
 def admin_services(business_id):
@@ -958,6 +1034,18 @@ def admin_services(business_id):
     </p>
     """
     return render_template_string(html, business_name=business_name, business_id=business_id, rows=rows)
+
+@app.route("/create_admin")
+def create_admin():
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO users (business_id, email, password_hash) VALUES (?, ?, ?)",
+        (1, "admin@example.com", generate_password_hash("admin123"))
+    )
+    conn.commit()
+    conn.close()
+    return "Admin user created!"
 
 # ------------------ Run ------------------
 if __name__ == "__main__":

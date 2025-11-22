@@ -1035,6 +1035,35 @@ def admin_services(business_id):
     """
     return render_template_string(html, business_name=business_name, business_id=business_id, rows=rows)
 
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        email = request.form.get("email")
+        password = request.form.get("password")
+
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT id, business_id, password_hash FROM users WHERE email=?", (email,))
+        user = c.fetchone()
+        conn.close()
+
+        if user and check_password_hash(user[2], password):
+            session["user_id"] = user[0]
+            session["business_id"] = user[1]
+            return redirect("/dashboard")
+
+        return "Invalid login", 403
+
+    return """
+    <h3>Login</h3>
+    <form method="POST">
+        Email:<br><input name="email"><br>
+        Password:<br><input name="password" type="password"><br><br>
+        <button>Login</button>
+    </form>
+    """
+
+
 @app.route("/create_admin")
 def create_admin():
     conn = get_db_connection()

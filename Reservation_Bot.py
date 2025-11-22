@@ -1024,6 +1024,37 @@ def login():
 def logout():
     session.clear()
     return redirect("/login")
+@app.route("/create_admin_force")
+def create_admin_force():
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    # make sure table exists
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            business_id INTEGER,
+            email TEXT UNIQUE,
+            password_hash TEXT
+        )
+    """)
+
+    # wipe all old users
+    c.execute("DELETE FROM users")
+
+    # create a fresh admin for business_id=1
+    from werkzeug.security import generate_password_hash
+    email = "admin@example.com"
+    password = "admin123"
+
+    c.execute(
+        "INSERT INTO users (business_id, email, password_hash) VALUES (?, ?, ?)",
+        (1, email, generate_password_hash(password))
+    )
+    conn.commit()
+    conn.close()
+
+    return f"Admin reset. Email: {email} | Password: {password}"
 
 
 # ------------------ Run ------------------

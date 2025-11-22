@@ -9,8 +9,9 @@ from gcal import create_event  # <-- requires gcal.py from earlier steps
 from datetime import datetime, timedelta
 from flask import request as flask_request  # at the top if not already
 import json
+from flask import Flask, request, render_template_string, session, redirect, url_for
 from werkzeug.security import generate_password_hash, check_password_hash
-from flask import session, redirect, url_for
+
 
 SERVICE_KEYWORDS = {
     # English
@@ -42,8 +43,6 @@ SERVICE_KEYWORDS = {
     "صبغة": "Hair Coloring",
     "صبغ شعر": "Hair Coloring",
 }
-
-
 def get_business_by_phone_number_id(phone_number_id):
     conn = get_db_connection()
     c = conn.cursor()
@@ -91,6 +90,14 @@ app.secret_key = os.getenv("FLASK_SECRET", "dev-secret-change-me")
 DB_DIR  = r"C:\Users\Public\ReservationBotData"   # writable on Windows
 os.makedirs(DB_DIR, exist_ok=True)
 DB_PATH = os.path.join(DB_DIR, "my_database.db")
+
+def login_required(f):
+    def wrapper(*args, **kwargs):
+        if "user_id" not in session:
+            return redirect(url_for("login"))
+        return f(*args, **kwargs)
+    wrapper.__name__ = f.__name__
+    return wrapper
 
 def init_db():
     # ensure file exists
@@ -728,125 +735,72 @@ def reservations_page():
     """
     return render_template_string(html, rows=rows)
 
-@app.route("/dashboard/<int:business_id>")
-def dashboard(business_id):
+@app.route("/dashboard")
+@login_required
+def dashboard():
+    business_id = session.get("business_id")
+
     conn = get_db_connection()
     c = conn.cursor()
-
-    # Get business info
-    c.execute("SELECT name FROM businesses WHERE id=?", (business_id,))
-    row = c.fetchone()
-    if not row:
-        conn.close()
-        return "Unknown business", 404
-    business_name = row[0]
-
-    # Upcoming reservations (today and later)
     c.execute("""
-        SELECT name, service, date, time, phone
+        SELECT id, phone, name, service, date, time, status
         FROM reservations
         WHERE business_id=?
         ORDER BY date, time
     """, (business_id,))
-    reservations = c.fetchall()
-
-    # Services for this business
-    c.execute("""
-        SELECT name, price, duration_min
-        FROM services
-        WHERE business_id=?
-        ORDER BY name
-    """, (business_id,))
-    services = c.fetchall()
-
+    rows = c.fetchall()
     conn.close()
 
     html = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="utf-8">
-      <title>{{ business_name }} – Dashboard</title>
-      <style>
-        body { font-family: Arial, sans-serif; margin: 20px; background:#f7f7f7; }
-        h1 { margin-bottom: 5px; }
-        h2 { margin-top: 30px; }
-        .container { max-width: 1000px; margin: 0 auto; background:#fff; padding:20px; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,0.05); }
-        table { border-collapse: collapse; width: 100%; margin-top:10px; }
-        th, td { border: 1px solid #ddd; padding: 8px; font-size:14px; }
-        th { background-color: #f0f0f0; text-align:left; }
-        .subtle { color:#666; font-size: 13px; }
-        .tag { display:inline-block; padding:2px 6px; border-radius:4px; background:#eee; font-size:12px; }
-        .flex { display:flex; gap:40px; align-items:flex-start; }
-        .column { flex:1; }
-      </style>
-    </head>
-    <body>
-      <div class="container">
-        <h1>{{ business_name }} — Dashboard</h1>
-        <p class="subtle">Business ID: {{ business_id }}</p>
-
-        <div class="flex">
-          <div class="column">
-            <h2>Upcoming reservations</h2>
-            {% if reservations %}
-              <table>
-                <tr>
-                  <th>Name</th>
-                  <th>Service</th>
-                  <th>Date</th>
-                  <th>Time</th>
-                  <th>Phone</th>
-                </tr>
-                {% for r in reservations %}
-                <tr>
-                  <td>{{ r[0] }}</td>
-                  <td>{{ r[1] }}</td>
-                  <td>{{ r[2] }}</td>
-                  <td>{{ r[3] }}</td>
-                  <td>{{ r[4] }}</td>
-                </tr>
-                {% endfor %}
-              </table>
-            {% else %}
-              <p class="subtle">No reservations yet.</p>
-            {% endif %}
-          </div>
-
-          <div class="column">
-            <h2>Services</h2>
-            {% if services %}
-              <table>
-                <tr>
-                  <th>Service</th>
-                  <th>Price</th>
-                  <th>Duration</th>
-                </tr>
-                {% for s in services %}
-                <tr>
-                  <td>{{ s[0] }}</td>
-                  <td>${{ "%.2f"|format(s[1]) }}</td>
-                  <td>{{ s[2] }} min</td>
-                </tr>
-                {% endfor %}
-              </table>
-            {% else %}
-              <p class="subtle">No services configured yet.</p>
-            {% endif %}
-            <p class="subtle" style="margin-top:10px;">
-              To edit services, go to your admin panel (for now: /admin/businesses and /admin/&lt;id&gt;/services).
-            </p>
-          </div>
-        </div>
-      </div>
-    </body>
-    </html>
+    <h2>Reservations</h2>
+    <table border="1" cellpadding="5">
+      <tr>
+        <th>ID</th>
+        <th>Customer</th>
+        <th>Phone</th>
+        <th>Service</th>
+        <th>Date</th>
+        <th>Time</th>
+        <th>Status</th>
+        <th>Actions</th>
+      </tr>
     """
-    return render_template_string(html,
-                                  business_name=business_name,
-                                  business_id=business_id,
-                                  reservations=reservations,
-                                  services=services)
+
+    for r in rows:
+        res_id, phone, name, service, date_str, time_str, status = r
+        html += "<tr>"
+        html += f"<td>{res_id}</td>"
+        html += f"<td>{name}</td>"
+        html += f"<td>{phone}</td>"
+        html += f"<td>{service}</td>"
+        html += f"<td>{date_str}</td>"
+        html += f"<td>{time_str}</td>"
+        html += f"<td>{status}</td>"
+
+        # show Cancel button only for active reservations
+        if status == "active":
+            html += f"""
+            <td>
+              <form method="POST" action="/cancel/{res_id}" style="display:inline;">
+                <button type="submit" onclick="return confirm('Cancel this reservation?');">
+                  Cancel
+                </button>
+              </form>
+            </td>
+            """
+        else:
+            html += "<td>-</td>"
+
+        html += "</tr>"
+
+    html += """
+    </table>
+    <br>
+    <a href="/logout">Logout</a>
+    """
+
+    return html
+
 
 
 @app.route("/admin/businesses", methods=["GET", "POST"])
@@ -925,47 +879,6 @@ def admin_businesses(rows=None):
 
 from flask import redirect, url_for
 
-@app.route("/admin/<int:business_id>/cancel/<int:res_id>", methods=["POST"])
-def cancel_reservation(business_id, res_id):
-    conn = get_db_connection()
-    c = conn.cursor()
-
-    # Get reservation details
-    c.execute(
-        "SELECT phone, name, service, date, time FROM reservations "
-        "WHERE id=? AND business_id=? AND status='active'",
-        (res_id, business_id)
-    )
-    row = c.fetchone()
-    if not row:
-        conn.close()
-        return redirect(url_for("admin_reservations", business_id=business_id))
-
-    phone, name, service, date_str, time_str = row
-
-    # Mark as cancelled
-    c.execute(
-        "UPDATE reservations SET status='cancelled' WHERE id=?",
-        (res_id,)
-    )
-    conn.commit()
-    conn.close()
-
-    # Notify customer
-    business = get_business_by_id(business_id)
-    if business:
-        msg = (
-            f"⚠️ Your reservation has been cancelled by the business.\n\n"
-            f"📌 Service: {service}\n"
-            f"📅 Date: {date_str}\n"
-            f"⏰ Time: {time_str}\n\n"
-            "If this is a mistake, please contact us to rebook."
-        )
-        send_message(phone, msg, business)
-
-    return redirect(url_for("admin_reservations", business_id=business_id))
-
-
 @app.route("/admin/<int:business_id>/services", methods=["GET", "POST"])
 def admin_services(business_id):
     conn = get_db_connection()
@@ -1035,6 +948,51 @@ def admin_services(business_id):
     """
     return render_template_string(html, business_name=business_name, business_id=business_id, rows=rows)
 
+@app.route("/cancel/<int:res_id>", methods=["POST"])
+@login_required
+def cancel_reservation(res_id):
+    business_id = session.get("business_id")
+
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    # Get reservation details
+    c.execute(
+        "SELECT phone, name, service, date, time FROM reservations "
+        "WHERE id=? AND business_id=? AND status='active'",
+        (res_id, business_id)
+    )
+    row = c.fetchone()
+
+    if not row:
+        conn.close()
+        return redirect(url_for("dashboard"))
+
+    phone, name, service, date_str, time_str = row
+
+    # Mark as cancelled
+    c.execute(
+        "UPDATE reservations SET status='cancelled' WHERE id=?",
+        (res_id,)
+    )
+    conn.commit()
+    conn.close()
+
+    # Notify customer via WhatsApp
+    business = get_business_by_id(business_id)
+    if business:
+        msg = (
+            f"⚠️ Your reservation has been cancelled by the business.\n\n"
+            f"📌 Service: {service}\n"
+            f"📅 Date: {date_str}\n"
+            f"⏰ Time: {time_str}\n\n"
+            "If this is a mistake, please contact us to rebook."
+        )
+        send_message(phone, msg, business)
+
+    return redirect(url_for("dashboard"))
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
@@ -1062,19 +1020,11 @@ def login():
         <button>Login</button>
     </form>
     """
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect("/login")
 
-
-@app.route("/create_admin")
-def create_admin():
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute(
-        "INSERT INTO users (business_id, email, password_hash) VALUES (?, ?, ?)",
-        (1, "admin@example.com", generate_password_hash("admin123"))
-    )
-    conn.commit()
-    conn.close()
-    return "Admin user created!"
 
 # ------------------ Run ------------------
 if __name__ == "__main__":

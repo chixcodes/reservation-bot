@@ -15,6 +15,15 @@ from flask import Flask, render_template, redirect, session
 from auth import auth   # ← ADD THIS LINE
 
 
+DB_FILENAME = "reservation_v2.db"  # new DB file, separate from old reservation.db
+
+
+def get_db_connection():
+    conn = sqlite3.connect(DB_FILENAME)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 SERVICE_KEYWORDS = {
     # English
     "haircut": "Haircut",
@@ -105,132 +114,51 @@ def login_required(f):
     return wrapper
 
 def init_db():
-    # ensure file exists
-    with open(DB_PATH, "ab"):
-        pass
-
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
 
-    # 1) Businesses table (supports meta + 360dialog)
+    # Businesses table (each client)
     c.execute("""
         CREATE TABLE IF NOT EXISTS businesses (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT,
-            phone_number_id TEXT,
-            access_token TEXT,
-            calendar_id TEXT,
-            timezone TEXT,
-            provider TEXT DEFAULT 'meta',
-            api_key TEXT
-        )
-    """)
-
-    # Safe ALTERs in case the table already existed
-    try:
-        c.execute("ALTER TABLE businesses ADD COLUMN provider TEXT DEFAULT 'meta'")
-    except sqlite3.OperationalError:
-        pass
-
-    try:
-        c.execute("ALTER TABLE businesses ADD COLUMN api_key TEXT")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        c.execute("ALTER TABLE businesses ADD COLUMN login_email TEXT")
-    except sqlite3.OperationalError:
-        pass
-
-    try:
-        c.execute("ALTER TABLE businesses ADD COLUMN password_hash TEXT")
-    except sqlite3.OperationalError:
-        pass
-
-    # Ensure default business with id = 1
-    c.execute("SELECT id FROM businesses WHERE id = 1")
-    if not c.fetchone():
-        c.execute(
-            "INSERT INTO businesses (id, name, phone_number_id, access_token, calendar_id, timezone, provider) "
-            "VALUES (1, ?, ?, ?, ?, ?, 'meta')",
-            (
-                BUSINESS_NAME,
-                PHONE_NUMBER_ID or "",
-                ACCESS_TOKEN or "",
-                "primary",
-                "Asia/Beirut"
-            )
-        )
-
-    # 2) Reservations table (add business_id with default 1)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS reservations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            phone TEXT,
-            name  TEXT,
-            service TEXT,
-            date  TEXT,
-            time  TEXT,
+            name TEXT NOT NULL,
+            whatsapp_number TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
-    # add business_id column if it doesn't exist
-    try:
-        c.execute("ALTER TABLE reservations ADD COLUMN business_id INTEGER DEFAULT 1")
-    except sqlite3.OperationalError:
-        # column already exists, ignore
-        pass
-    # add status column if it doesn't exist
-    try:
-        c.execute("ALTER TABLE reservations ADD COLUMN status TEXT DEFAULT 'active'")
-    except sqlite3.OperationalError:
-        pass
-
-    # 3) Services table (add business_id with default 1)
+    # Business login users
     c.execute("""
-        CREATE TABLE IF NOT EXISTS services (
+        CREATE TABLE IF NOT EXISTS business_users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE,
-            price REAL NOT NULL,
-            duration_min INTEGER NOT NULL DEFAULT 45
+            business_id INTEGER NOT NULL,
+            username TEXT UNIQUE,
+            password_hash TEXT,
+            role TEXT DEFAULT 'owner',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (business_id) REFERENCES businesses(id)
         )
     """)
 
-    try:
-        c.execute("ALTER TABLE services ADD COLUMN business_id INTEGER DEFAULT 1")
-    except sqlite3.OperationalError:
-        pass
-
-    # seed services if empty
-    c.execute("SELECT COUNT(*) FROM services")
-    if c.fetchone()[0] == 0:
-        c.executemany(
-            "INSERT INTO services(name, price, duration_min, business_id) VALUES (?, ?, ?, 1)",
-            [
-                ("haircut", 15.0, 30),
-                ("beard trim", 8.0, 20),
-                ("hair + beard", 20.0, 45),
-                ("consultation", 0.0, 30),
-            ]
-        )
-    # USERS TABLE (for admin login)
+    # Reservations table (new schema)
     c.execute("""
-        CREATE TABLE IF NOT EXISTS users (
+        CREATE TABLE IF NOT EXISTS reservations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            business_id INTEGER,
-            email TEXT UNIQUE,
-            password_hash TEXT,
+            business_id INTEGER NOT NULL,
+            customer_name TEXT,
+            customer_phone TEXT,
+            service TEXT,
+            date TEXT,
+            time TEXT,
+            status TEXT DEFAULT 'PENDING',  -- PENDING / CONFIRMED / CANCELED
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (business_id) REFERENCES businesses(id)
         )
     """)
 
     conn.commit()
     conn.close()
-    print("DB ready (multi-business base schema)")
 
-
-def get_db_connection():
-    return sqlite3.connect(DB_PATH)
 
 # ------------------ Config (.env) ------------------
 load_dotenv()
@@ -546,6 +474,7 @@ def save_reservation(business_id, phone, name, service, date, time_):
     conn.commit()
     conn.close()
     print(f"SAVED -> {name}, {service} on {date} at {time_}")
+
 
 
 
@@ -922,7 +851,8 @@ def cancel_reservation(reservation_id):
 
     business_id = session["business_id"]
 
-    conn = sqlite3.connect("reservation.db")
+    conn = get_db_connection()
+
     c = conn.cursor()
 
     # Get reservation details
@@ -999,7 +929,8 @@ def dashboard():
 
     business_id = session["business_id"]
 
-    conn = sqlite3.connect("reservation.db")
+    conn = get_db_connection()
+
     c = conn.cursor()
 
     # Fetch reservations for this business only
@@ -1023,7 +954,8 @@ def confirm_reservation(reservation_id):
 
     business_id = session["business_id"]
 
-    conn = sqlite3.connect("reservation.db")
+    conn = get_db_connection()
+
     c = conn.cursor()
 
     # Get reservation details (for WhatsApp / calendar)

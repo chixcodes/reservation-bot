@@ -11,6 +11,8 @@ from flask import request as flask_request  # at the top if not already
 import json
 from flask import Flask, request, render_template_string, session, redirect, url_for
 from werkzeug.security import generate_password_hash, check_password_hash
+from flask import Flask, render_template, redirect, session
+from auth import auth   # ← ADD THIS LINE
 
 
 SERVICE_KEYWORDS = {
@@ -84,7 +86,10 @@ def get_business_by_id(business_id):
 
 # ------------------ Flask ------------------
 app = Flask(__name__)
-app.secret_key = os.getenv("FLASK_SECRET", "dev-secret-change-me")
+app.secret_key = "CHANGE_THIS_SECRET_KEY"   # ← any random string
+# Register the auth blueprint (for /login, /register, /logout)
+app.register_blueprint(auth)
+
 
 # ------------------ Database (safe path) ------------------
 DB_DIR  = r"C:\Users\Public\ReservationBotData"   # writable on Windows
@@ -528,17 +533,21 @@ def process_incoming_message(business, phone, text):
 
 
 
-def save_reservation (business_id, phone, name, service, date, time_):
+def save_reservation(business_id, phone, name, service, date, time_):
     conn = get_db_connection()
     c = conn.cursor()
+
     c.execute(
-        "INSERT INTO reservations (business_id, phone, name, service, date, time, status) "
-        "VALUES (?, ?, ?, ?, ?, ?, 'active')",
-        (business_id, phone, name, service, date, time_)
+        "INSERT INTO reservations (business_id, customer_name, customer_phone, service, date, time, status) "
+        "VALUES (?, ?, ?, ?, ?, ?, 'PENDING')",
+        (business_id, name, phone, service, date, time_)
     )
+
     conn.commit()
     conn.close()
-    print("SAVED:", phone, name, service, date, time_)
+    print(f"SAVED -> {name}, {service} on {date} at {time_}")
+
+
 
 
 def get_service_info(business_id, service_name):
@@ -590,6 +599,32 @@ def normalize_time_str(tstr):
             continue
     return None
 
+def send_reservation_confirmation(phone, name, service, date, time):
+    message = (
+        f"✅ Your reservation is confirmed!\n"
+        f"Name: {name}\n"
+        f"Service: {service}\n"
+        f"Date: {date}\n"
+        f"Time: {time}\n\n"
+        f"Thank you for booking with us 🤍"
+    )
+    # 👉 Replace this with your real WhatsApp sending function
+    # Example: send_whatsapp_message(phone, message)
+    print("CONFIRMATION to", phone, ":", message)
+
+
+def send_reservation_cancellation(phone, name, service, date, time):
+    message = (
+        f"❌ Your reservation has been canceled.\n"
+        f"Name: {name}\n"
+        f"Service: {service}\n"
+        f"Date: {date}\n"
+        f"Time: {time}\n\n"
+        f"If this is a mistake, please contact us to reschedule."
+    )
+    # 👉 Replace this with your real WhatsApp sending function
+    # Example: send_whatsapp_message(phone, message)
+    print("CANCELLATION to", phone, ":", message)
 
 
 
@@ -734,74 +769,6 @@ def reservations_page():
     </table>
     """
     return render_template_string(html, rows=rows)
-
-@app.route("/dashboard")
-@login_required
-def dashboard():
-    business_id = session.get("business_id")
-
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("""
-        SELECT id, phone, name, service, date, time, status
-        FROM reservations
-        WHERE business_id=?
-        ORDER BY date, time
-    """, (business_id,))
-    rows = c.fetchall()
-    conn.close()
-
-    html = """
-    <h2>Reservations</h2>
-    <table border="1" cellpadding="5">
-      <tr>
-        <th>ID</th>
-        <th>Customer</th>
-        <th>Phone</th>
-        <th>Service</th>
-        <th>Date</th>
-        <th>Time</th>
-        <th>Status</th>
-        <th>Actions</th>
-      </tr>
-    """
-
-    for r in rows:
-        res_id, phone, name, service, date_str, time_str, status = r
-        html += "<tr>"
-        html += f"<td>{res_id}</td>"
-        html += f"<td>{name}</td>"
-        html += f"<td>{phone}</td>"
-        html += f"<td>{service}</td>"
-        html += f"<td>{date_str}</td>"
-        html += f"<td>{time_str}</td>"
-        html += f"<td>{status}</td>"
-
-        # show Cancel button only for active reservations
-        if status == "active":
-            html += f"""
-            <td>
-              <form method="POST" action="/cancel/{res_id}" style="display:inline;">
-                <button type="submit" onclick="return confirm('Cancel this reservation?');">
-                  Cancel
-                </button>
-              </form>
-            </td>
-            """
-        else:
-            html += "<td>-</td>"
-
-        html += "</tr>"
-
-    html += """
-    </table>
-    <br>
-    <a href="/logout">Logout</a>
-    """
-
-    return html
-
-
 
 @app.route("/admin/businesses", methods=["GET", "POST"])
 def admin_businesses(rows=None):
@@ -948,49 +915,48 @@ def admin_services(business_id):
     """
     return render_template_string(html, business_name=business_name, business_id=business_id, rows=rows)
 
-@app.route("/cancel/<int:res_id>", methods=["POST"])
-@login_required
-def cancel_reservation(res_id):
-    business_id = session.get("business_id")
+@app.route("/cancel/<int:reservation_id>")
+def cancel_reservation(reservation_id):
+    if "business_id" not in session:
+        return redirect("/login")
 
-    conn = get_db_connection()
+    business_id = session["business_id"]
+
+    conn = sqlite3.connect("reservation.db")
     c = conn.cursor()
 
     # Get reservation details
-    c.execute(
-        "SELECT phone, name, service, date, time FROM reservations "
-        "WHERE id=? AND business_id=? AND status='active'",
-        (res_id, business_id)
-    )
+    c.execute("""
+        SELECT customer_phone, customer_name, service, date, time
+        FROM reservations
+        WHERE id = ? AND business_id = ?
+    """, (reservation_id, business_id))
     row = c.fetchone()
 
     if not row:
         conn.close()
-        return redirect(url_for("dashboard"))
+        return redirect("/dashboard")
 
-    phone, name, service, date_str, time_str = row
+    phone, name, service, date, time = row
 
-    # Mark as cancelled
-    c.execute(
-        "UPDATE reservations SET status='cancelled' WHERE id=?",
-        (res_id,)
-    )
+    # Update status to CANCELED
+    c.execute("""
+        UPDATE reservations
+        SET status = 'CANCELED'
+        WHERE id = ? AND business_id = ?
+    """, (reservation_id, business_id))
+
     conn.commit()
     conn.close()
 
-    # Notify customer via WhatsApp
-    business = get_business_by_id(business_id)
-    if business:
-        msg = (
-            f"⚠️ Your reservation has been cancelled by the business.\n\n"
-            f"📌 Service: {service}\n"
-            f"📅 Date: {date_str}\n"
-            f"⏰ Time: {time_str}\n\n"
-            "If this is a mistake, please contact us to rebook."
-        )
-        send_message(phone, msg, business)
+    # 🔴 TODO: send WhatsApp cancellation using your existing WhatsApp function
+    try:
+        send_reservation_cancellation(phone, name, service, date, time)
+    except Exception as e:
+        print("Error sending WhatsApp cancellation:", e)
 
-    return redirect(url_for("dashboard"))
+    return redirect("/dashboard")
+
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -1024,38 +990,74 @@ def login():
 def logout():
     session.clear()
     return redirect("/login")
-@app.route("/create_admin_force")
-def create_admin_force():
-    conn = get_db_connection()
+
+@app.route("/dashboard")
+def dashboard():
+    # If not logged in, send to login
+    if "business_id" not in session:
+        return redirect("/login")
+
+    business_id = session["business_id"]
+
+    conn = sqlite3.connect("reservation.db")
     c = conn.cursor()
 
-    # make sure table exists
+    # Fetch reservations for this business only
     c.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            business_id INTEGER,
-            email TEXT UNIQUE,
-            password_hash TEXT
-        )
-    """)
+        SELECT id, customer_name, service, date, time, status
+        FROM reservations
+        WHERE business_id = ?
+        ORDER BY date, time
+    """, (business_id,))
 
-    # wipe all old users
-    c.execute("DELETE FROM users")
+    reservations = c.fetchall()
+    conn.close()
 
-    # create a fresh admin for business_id=1
-    from werkzeug.security import generate_password_hash
-    email = "admin@example.com"
-    password = "admin123"
+    return render_template("dashboard.html", reservations=reservations)
 
-    c.execute(
-        "INSERT INTO users (business_id, email, password_hash) VALUES (?, ?, ?)",
-        (1, email, generate_password_hash(password))
-    )
+@app.route("/confirm/<int:reservation_id>")
+def confirm_reservation(reservation_id):
+    # Ensure user is logged in
+    if "business_id" not in session:
+        return redirect("/login")
+
+    business_id = session["business_id"]
+
+    conn = sqlite3.connect("reservation.db")
+    c = conn.cursor()
+
+    # Get reservation details (for WhatsApp / calendar)
+    c.execute("""
+        SELECT customer_phone, customer_name, service, date, time
+        FROM reservations
+        WHERE id = ? AND business_id = ?
+    """, (reservation_id, business_id))
+    row = c.fetchone()
+
+    if not row:
+        conn.close()
+        # Reservation not found or not owned by this business
+        return redirect("/dashboard")
+
+    phone, name, service, date, time = row
+
+    # Update status to CONFIRMED
+    c.execute("""
+        UPDATE reservations
+        SET status = 'CONFIRMED'
+        WHERE id = ? AND business_id = ?
+    """, (reservation_id, business_id))
+
     conn.commit()
     conn.close()
 
-    return f"Admin reset. Email: {email} | Password: {password}"
+    # 🟢 TODO: send WhatsApp confirmation using your existing WhatsApp function
+    try:
+        send_reservation_confirmation(phone, name, service, date, time)
+    except Exception as e:
+        print("Error sending WhatsApp confirmation:", e)
 
+    return redirect("/dashboard")
 
 # ------------------ Run ------------------
 if __name__ == "__main__":

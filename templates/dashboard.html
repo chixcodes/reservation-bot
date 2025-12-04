@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Dashboard - Reservations</title>
+    <style>
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 8px; border: 1px solid #ccc; text-align: left; }
+        .status-pending { background-color: #fff8b3; }
+        .status-confirmed { background-color: #c6f7c3; }
+        .status-canceled { background-color: #f8b3b3; }
+    </style>
+</head>
+<body>
+
+<h2>Reservations Dashboard</h2>
+<a href="/logout">Logout</a>
+
+<table>
+<tr>
+    <th>Name</th><th>Service</th><th>Date</th><th>Time</th><th>Status</th><th>Actions</th>
+</tr>
+
+{% for r in reservations %}
+<tr class="
+{% if r[5]=='CONFIRMED' %}status-confirmed
+{% elif r[5]=='CANCELED' %}status-canceled
+{% else %}status-pending
+{% endif %}
+">
+    <td>{{ r[1] }}</td>
+    <td>{{ r[2] }}</td>
+    <td>{{ r[3] }}</td>
+    <td>{{ r[4] }}</td>
+    <td>{{ r[5] }}</td>
+    <td>
+        {% if r[5]!="CONFIRMED" %}<a href="/confirm/{{ r[0] }}">Confirm</a>{% endif %}
+        {% if r[5]!="CANCELED" %}<a href="/cancel/{{ r[0] }}">Cancel</a>{% endif %}
+    </td>
+</tr>
+{% endfor %}
+
+</table>
+</body>
+</html>

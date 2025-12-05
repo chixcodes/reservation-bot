@@ -471,18 +471,29 @@ def process_incoming_message(business, phone, text):
     if state and state.get("step") == "awaiting_service":
         lt2 = t.lower()
 
-        normalized = None
+        # Detect all matching canonical services
+        matched = set()
         for kw, canonical in SERVICE_KEYWORDS.items():
             if kw.lower() in lt2:
-                normalized = canonical
-                break
+                matched.add(canonical)
 
         ai_service = None
-        if normalized is None and OPENROUTER_API_KEY:
-            ai_service = ai_pick_service(business, t)
-            if ai_service:
-                normalized = ai_service
+        normalized = None
 
+        # Special case: user asked for both haircut & beard
+        if "Haircut" in matched and "Beard Trim" in matched:
+            normalized = "Haircut and Beard"
+        elif matched:
+            # If we matched at least one, just take one of them
+            normalized = next(iter(matched))
+        else:
+            # No keyword match, try AI
+            if OPENROUTER_API_KEY:
+                ai_service = ai_pick_service(business, t)
+                if ai_service:
+                    normalized = ai_service
+
+        # Fallback: use raw text if nothing worked
         if normalized is None:
             normalized = t
 
@@ -496,6 +507,7 @@ def process_incoming_message(business, phone, text):
             business,
         )
         return "ok", 200
+
 
     # STEP 3 – DATE
     if state and state.get("step") == "awaiting_date":
@@ -590,13 +602,11 @@ def process_incoming_message(business, phone, text):
             print("gcal error:", e)
 
 
-    # FALLBACK
-    send_message(
-        phone,
-        "Sorry, I didn't understand. Type 'book' to create a reservation or 'cancel' to cancel.",
-        business,
-    )
+
+    # FALLBACK: stay silent instead of sending an extra confusing message
+    print("FALLBACK: message not handled:", text)
     return "ok", 200
+
 
 
 # ------------------ WEBHOOK ------------------

@@ -383,13 +383,14 @@ def save_reservation(business_id, phone, name, service, date, time_):
     c.execute(
         """
         INSERT INTO reservations (business_id, customer_name, customer_phone, service, date, time, status)
-        VALUES (?, ?, ?, ?, ?, ?, 'PENDING')
+        VALUES (?, ?, ?, ?, ?, ?, 'CONFIRMED')
         """,
         (business_id, name, phone, service, date, time_),
     )
     conn.commit()
     conn.close()
-    print(f"SAVED -> {name}, {service} on {date} at {time_}")
+    print(f"SAVED (CONFIRMED) -> {name}, {service} on {date} at {time_}")
+
 
 
 def send_reservation_confirmation(phone, name, service, date, time, business):
@@ -572,20 +573,22 @@ def process_incoming_message(business, phone, text):
                 f"Duration: {duration} min\n"
                 f"When: {state.get('date')} {state.get('time')}"
             )
-            if business.get("calendar_id"):
-                create_event(
-                    summary,
-                    state.get("date", ""),
-                    state.get("time", ""),
-                    description=description,
-                    calendar_id=business["calendar_id"],
-                    duration_min=duration,
-                )
+
+            # Use business-specific calendar if set, otherwise default to 'primary'
+            calendar_id = business.get("calendar_id") or "primary"
+
+            create_event(
+                summary,
+                state.get("date", ""),
+                state.get("time", ""),
+                description=description,
+                calendar_id=calendar_id,
+                duration_min=duration,
+            )
+
         except Exception as e:
             print("gcal error:", e)
 
-        user_state.pop(key, None)
-        return "ok", 200
 
     # FALLBACK
     send_message(
@@ -962,7 +965,7 @@ def confirm_reservation(reservation_id):
     c = conn.cursor()
     c.execute(
         """
-        SELECT customer_phone, customer_name, service, date, time
+        SELECT customer_phone, customer_name, service, date, time, status
         FROM reservations
         WHERE id = ? AND business_id = ?
         """,
@@ -974,8 +977,14 @@ def confirm_reservation(reservation_id):
         conn.close()
         return redirect("/dashboard")
 
-    phone, name, service, date, time = row
+    phone, name, service, date, time, status = row
 
+    # If it's already confirmed (bot did it), just redirect
+    if status == "CONFIRMED":
+        conn.close()
+        return redirect("/dashboard")
+
+    # Otherwise, mark it as confirmed silently (no extra WhatsApp message)
     c.execute(
         """
         UPDATE reservations
@@ -987,14 +996,10 @@ def confirm_reservation(reservation_id):
     conn.commit()
     conn.close()
 
-    business = get_business_by_id(business_id)
-    if business:
-        try:
-            send_reservation_confirmation(phone, name, service, date, time, business)
-        except Exception as e:
-            print("Error sending WhatsApp confirmation:", e)
-
+    # No second send_reservation_confirmation here
     return redirect("/dashboard")
+
+
 
 
 @app.route("/cancel/<int:reservation_id>")

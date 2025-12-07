@@ -1,7 +1,7 @@
 # Reservation_Bot.py — CLEANED VERSION
 
 import os
-import sqlite3
+from db_utils import get_db_connection, init_db
 import requests
 import json
 from datetime import datetime, timedelta
@@ -22,86 +22,7 @@ from gcal import create_event  # your existing gcal helper
 
 
 # ------------------ DB CONFIG ------------------
-
-DB_FILENAME = "reservation_v2.db"
-
-
-def get_db_connection():
-    conn = sqlite3.connect(DB_FILENAME)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def init_db():
-    conn = get_db_connection()
-    c = conn.cursor()
-
-    # Businesses table (one row per client / WhatsApp number)
-    c.execute(
-        """
-        CREATE TABLE IF NOT EXISTS businesses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            phone_number_id TEXT,
-            access_token TEXT,
-            calendar_id TEXT,
-            timezone TEXT,
-            provider TEXT,
-            api_key TEXT
-        )
-        """
-    )
-
-    # Users table (for dashboard login)
-    c.execute(
-        """
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            business_id INTEGER NOT NULL,
-            email TEXT UNIQUE,
-            password_hash TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (business_id) REFERENCES businesses(id)
-        )
-        """
-    )
-
-    # Services table (per business)
-    c.execute(
-        """
-        CREATE TABLE IF NOT EXISTS services (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            business_id INTEGER NOT NULL,
-            name TEXT,
-            price REAL,
-            duration_min INTEGER,
-            FOREIGN KEY (business_id) REFERENCES businesses(id)
-        )
-        """
-    )
-
-    # Reservations table
-    c.execute(
-        """
-        CREATE TABLE IF NOT EXISTS reservations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            business_id INTEGER NOT NULL,
-            customer_name TEXT,
-            customer_phone TEXT,
-            service TEXT,
-            date TEXT,
-            time TEXT,
-            status TEXT DEFAULT 'PENDING', -- PENDING / CONFIRMED / CANCELED
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (business_id) REFERENCES businesses(id)
-        )
-        """
-    )
-
-    conn.commit()
-    conn.close()
-
-
+DB_FILENAME = "reservation_v2.db"###
 # ------------------ BUSINESS HELPERS ------------------
 
 
@@ -111,7 +32,7 @@ def get_business_by_phone_number_id(phone_number_id: str):
 
     # Try to match by phone_number_id
     c.execute(
-        "SELECT * FROM businesses WHERE phone_number_id=? LIMIT 1",
+        "SELECT * FROM businesses WHERE phone_number_id=%s LIMIT 1",
         (phone_number_id,),
     )
     row = c.fetchone()
@@ -130,7 +51,7 @@ def get_business_by_phone_number_id(phone_number_id: str):
 def get_business_by_id(business_id: int):
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT * FROM businesses WHERE id=?", (business_id,))
+    c.execute("SELECT * FROM businesses WHERE id=%s", (business_id,))
     row = c.fetchone()
     conn.close()
     if row:
@@ -282,7 +203,7 @@ def get_service_info(business_id, service_name):
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
-        "SELECT price, duration_min FROM services WHERE business_id=? AND lower(name)=lower(?)",
+        "SELECT price, duration_min FROM services WHERE business_id=%s AND lower(name)=lower(%s)",
         (business_id, service_name),
     )
     row = c.fetchone()
@@ -295,7 +216,7 @@ def get_service_info(business_id, service_name):
 def get_service_names_for_business(business_id):
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT name FROM services WHERE business_id=?", (business_id,))
+    c.execute("SELECT name FROM services WHERE business_id=%s", (business_id,))
     rows = c.fetchall()
     conn.close()
     return [r[0] for r in rows]
@@ -330,7 +251,7 @@ def is_taken(date_str, time_str):
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
-        "SELECT 1 FROM reservations WHERE date=? AND time=? LIMIT 1",
+        "SELECT 1 FROM reservations WHERE date=%s AND time=%s LIMIT 1",
         (date_str, time_str),
     )
     hit = c.fetchone() is not None
@@ -383,7 +304,7 @@ def save_reservation(business_id, phone, name, service, date, time_):
     c.execute(
         """
         INSERT INTO reservations (business_id, customer_name, customer_phone, service, date, time, status)
-        VALUES (?, ?, ?, ?, ?, ?, 'CONFIRMED')
+        VALUES (%s, %s, %s, %s, %s, %s, 'CONFIRMED')
         """,
         (business_id, name, phone, service, date, time_),
     )
@@ -445,7 +366,7 @@ def process_incoming_message(business, phone, text):
         conn = get_db_connection()
         c = conn.cursor()
         c.execute(
-            "DELETE FROM reservations WHERE business_id=? AND customer_phone=?",
+            "DELETE FROM reservations WHERE business_id=%s AND customer_phone=%s",
             (business["id"], phone),
         )
         conn.commit()
@@ -688,46 +609,47 @@ def reservations_page():
     return render_template_string(html, rows=rows)
 
 
-# ------------------ ADMIN BUSINESSES ------------------
+# ------------------ ADMIN BUSINESSES ------------------ #
 
 
-from flask import request as flask_request
-
+from flask import render_template_string, request  # make sure this import exists at the top
 
 @app.route("/admin/businesses", methods=["GET", "POST"])
 def admin_businesses():
     conn = get_db_connection()
     c = conn.cursor()
 
-    if flask_request.method == "POST":
-        name = flask_request.form.get("name", "").strip()
-        provider = flask_request.form.get("provider", "").strip()
-        phone_number_id = flask_request.form.get("phone_number_id", "").strip()
-        access_token = flask_request.form.get("access_token", "").strip()
-        api_key = flask_request.form.get("api_key", "").strip()
-        calendar_id = flask_request.form.get("calendar_id", "primary").strip()
-        timezone = flask_request.form.get("timezone", "Asia/Beirut").strip()
+    if request.method == "POST":
+        name            = request.form.get("name", "").strip()
+        provider        = request.form.get("provider", "meta").strip().lower()
+        phone_number_id = request.form.get("phone_number_id", "").strip()
+        access_token    = request.form.get("access_token", "").strip()
+        calendar_id     = request.form.get("calendar_id", "primary").strip()
+        timezone        = request.form.get("timezone", "Asia/Beirut").strip()
 
         if name and phone_number_id and access_token:
             c.execute(
                 """
-                INSERT INTO businesses(name, phone_number_id, access_token, calendar_id, timezone, provider, api_key)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO businesses
+                    (name, provider, phone_number_id, access_token, calendar_id, timezone)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 """,
-                (name, phone_number_id, access_token, calendar_id, timezone, provider, api_key),
+                (name, provider, phone_number_id, access_token, calendar_id, timezone),
             )
             conn.commit()
 
+    # Now load all businesses
     c.execute(
-        "SELECT id, name, phone_number_id, provider, timezone FROM businesses ORDER BY id"
+        "SELECT id, name, provider, phone_number_id, timezone FROM businesses ORDER BY id"
     )
-    rows = c.fetchall()
+    businesses = c.fetchall()
     conn.close()
 
     html = """
     <h1>Admin — Businesses</h1>
 
     <h2>Existing businesses</h2>
+    {% if businesses %}
     <table border="1" cellpadding="6">
       <tr>
         <th>ID</th>
@@ -735,21 +657,24 @@ def admin_businesses():
         <th>Provider</th>
         <th>Phone Number ID</th>
         <th>Timezone</th>
-        <th>Dashboard</th>
         <th>Services</th>
+        <th>Dashboard</th>
       </tr>
-      {% for b in rows %}
+      {% for b in businesses %}
       <tr>
-        <td>{{b[0]}}</td>
-        <td>{{b[1]}}</td>
-        <td>{{b[3]}}</td>
-        <td>{{b[2]}}</td>
-        <td>{{b[4]}}</td>
-        <td><a href="/dashboard">Dashboard</a></td>
-        <td><a href="/admin/{{b[0]}}/services">Manage services</a></td>
+        <td>{{ b.id }}</td>
+        <td>{{ b.name }}</td>
+        <td>{{ b.provider }}</td>
+        <td>{{ b.phone_number_id }}</td>
+        <td>{{ b.timezone }}</td>
+        <td><a href="/admin/{{ b.id }}/services">Manage services</a></td>
+        <td><a href="/dashboard %s business_id={{ b.id }}">Open dashboard</a></td>
       </tr>
       {% endfor %}
     </table>
+    {% else %}
+    <p>No businesses yet.</p>
+    {% endif %}
 
     <h2 style="margin-top:30px;">Add new business</h2>
     <form method="post">
@@ -766,16 +691,14 @@ def admin_businesses():
       <p>Phone Number ID (Meta only): <input name="phone_number_id"></p>
       <p>Access Token (Meta only): <input name="access_token" style="width:400px;"></p>
 
-      <p>360dialog API Key (if provider is 360dialog): <input name="api_key" style="width:400px;"></p>
-
       <p>Calendar ID: <input name="calendar_id" value="primary"></p>
       <p>Timezone: <input name="timezone" value="Asia/Beirut"></p>
 
       <p><button type="submit">Add business</button></p>
     </form>
     """
+    return render_template_string(html, businesses=businesses)
 
-    return render_template_string(html, rows=rows)
 
 
 # ------------------ ADMIN SERVICES ------------------
@@ -786,39 +709,51 @@ def admin_services(business_id):
     conn = get_db_connection()
     c = conn.cursor()
 
-    c.execute("SELECT name FROM businesses WHERE id=?", (business_id,))
-    b = c.fetchone()
-    if not b:
+    # Make sure business exists
+    c.execute("SELECT name FROM businesses WHERE id=%s", (business_id,))
+    biz = c.fetchone()
+    if not biz:
         conn.close()
         return f"No business with ID {business_id}", 404
-    business_name = b[0]
 
-    if flask_request.method == "POST":
-        name = flask_request.form.get("name", "").strip()
-        price = flask_request.form.get("price", "").strip()
-        dur = flask_request.form.get("duration_min", "").strip()
+    business_name = biz["name"]
+
+    if request.method == "POST":
+        name = request.form.get("name", "").strip()
+        price = request.form.get("price", "").strip()
+        dur = request.form.get("duration_min", "").strip()
 
         try:
-            price_f = float(price)
-        except Exception:
+            price_f = float(price) if price else 0.0
+        except ValueError:
             price_f = 0.0
+
         try:
-            dur_i = int(dur)
-        except Exception:
+            dur_i = int(dur) if dur else 30
+        except ValueError:
             dur_i = 30
 
         if name:
             c.execute(
-                "INSERT INTO services(name, price, duration_min, business_id) VALUES (?, ?, ?, ?)",
+                """
+                INSERT INTO services (name, price, duration_min, business_id)
+                VALUES (%s, %s, %s, %s)
+                """,
                 (name, price_f, dur_i, business_id),
             )
             conn.commit()
 
+    # List services for this business
     c.execute(
-        "SELECT id, name, price, duration_min FROM services WHERE business_id=? ORDER BY id",
+        """
+        SELECT id, name, price, duration_min
+        FROM services
+        WHERE business_id=%s
+        ORDER BY id
+        """,
         (business_id,),
     )
-    rows = c.fetchall()
+    services = c.fetchall()
     conn.close()
 
     html = """
@@ -826,12 +761,12 @@ def admin_services(business_id):
 
     <table border="1" cellpadding="6">
       <tr><th>ID</th><th>Name</th><th>Price</th><th>Duration (min)</th></tr>
-      {% for s in rows %}
+      {% for s in services %}
       <tr>
-        <td>{{s[0]}}</td>
-        <td>{{s[1]}}</td>
-        <td>{{s[2]}}</td>
-        <td>{{s[3]}}</td>
+        <td>{{ s.id }}</td>
+        <td>{{ s.name }}</td>
+        <td>{{ s.price }}</td>
+        <td>{{ s.duration_min }}</td>
       </tr>
       {% endfor %}
     </table>
@@ -845,13 +780,17 @@ def admin_services(business_id):
     </form>
 
     <p style="margin-top:20px;">
-      <a href="/dashboard">Back to dashboard</a> |
+      <a href="/dashboard %s business_id={{ business_id }}">Back to dashboard</a> |
       <a href="/admin/businesses">Back to businesses</a>
     </p>
     """
     return render_template_string(
-        html, business_name=business_name, business_id=business_id, rows=rows
+        html,
+        services=services,
+        business_name=business_name,
+        business_id=business_id,
     )
+
 
 
 # ------------------ AUTH: REGISTER / LOGIN / LOGOUT ------------------
@@ -878,7 +817,7 @@ def register():
 
         try:
             c.execute(
-                "INSERT INTO users(business_id, email, password_hash) VALUES (?, ?, ?)",
+                "INSERT INTO users(business_id, email, password_hash) VALUES (%s, %s, %s)",
                 (business_id, email, pw_hash),
             )
             conn.commit()
@@ -909,7 +848,7 @@ def login():
         conn = get_db_connection()
         c = conn.cursor()
         c.execute(
-            "SELECT id, business_id, password_hash FROM users WHERE email=?", (email,)
+            "SELECT id, business_id, password_hash FROM users WHERE email=%s", (email,)
         )
         user = c.fetchone()
         conn.close()
@@ -942,18 +881,33 @@ def logout():
 
 @app.route("/dashboard")
 def dashboard():
-    if "business_id" not in session:
-        return redirect("/login")
-
-    business_id = session["business_id"]
+    # business_id comes from query param, or fall back to first business
+    business_id = request.args.get("business_id", type=int)
 
     conn = get_db_connection()
     c = conn.cursor()
+
+    if business_id is None:
+        c.execute("SELECT id, name FROM businesses ORDER BY id LIMIT 1")
+        biz = c.fetchone()
+        if not biz:
+            conn.close()
+            return redirect("/admin/businesses")
+        business_id = biz["id"]
+        business_name = biz["name"]
+    else:
+        c.execute("SELECT id, name FROM businesses WHERE id=%s", (business_id,))
+        biz = c.fetchone()
+        if not biz:
+            conn.close()
+            return f"No business with ID {business_id}", 404
+        business_name = biz["name"]
+
     c.execute(
         """
         SELECT id, customer_name, service, date, time, status
         FROM reservations
-        WHERE business_id = ?
+        WHERE business_id = %s
         ORDER BY date, time
         """,
         (business_id,),
@@ -961,7 +915,51 @@ def dashboard():
     reservations = c.fetchall()
     conn.close()
 
-    return render_template("dashboard.html", reservations=reservations)
+    html = """
+    <h1>Dashboard — {{ business_name }}</h1>
+
+    {% if reservations %}
+    <table border="1" cellpadding="6">
+      <tr>
+        <th>ID</th>
+        <th>Name</th>
+        <th>Service</th>
+        <th>Date</th>
+        <th>Time</th>
+        <th>Status</th>
+        <th>Actions</th>
+      </tr>
+      {% for r in reservations %}
+      <tr>
+        <td>{{ r.id }}</td>
+        <td>{{ r.customer_name }}</td>
+        <td>{{ r.service }}</td>
+        <td>{{ r.date }}</td>
+        <td>{{ r.time }}</td>
+        <td>{{ r.status }}</td>
+        <td>
+          <a href="/confirm/{{ r.id }}%s business_id={{ business_id }}">Confirm</a> |
+          <a href="/cancel/{{ r.id }}%s business_id={{ business_id }}">Cancel</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <p>No reservations yet.</p>
+    {% endif %}
+
+    <p style="margin-top:20px;">
+      <a href="/admin/{{ business_id }}/services">Manage services</a> |
+      <a href="/admin/businesses">Back to businesses</a>
+    </p>
+    """
+    return render_template_string(
+        html,
+        reservations=reservations,
+        business_name=business_name,
+        business_id=business_id,
+    )
+
 
 
 @app.route("/confirm/<int:reservation_id>")
@@ -977,7 +975,7 @@ def confirm_reservation(reservation_id):
         """
         SELECT customer_phone, customer_name, service, date, time, status
         FROM reservations
-        WHERE id = ? AND business_id = ?
+        WHERE id = %s AND business_id = %s
         """,
         (reservation_id, business_id),
     )
@@ -999,7 +997,7 @@ def confirm_reservation(reservation_id):
         """
         UPDATE reservations
         SET status = 'CONFIRMED'
-        WHERE id = ? AND business_id = ?
+        WHERE id = %s AND business_id = %s
         """,
         (reservation_id, business_id),
     )
@@ -1025,7 +1023,7 @@ def cancel_reservation(reservation_id):
         """
         SELECT customer_phone, customer_name, service, date, time
         FROM reservations
-        WHERE id = ? AND business_id = ?
+        WHERE id = %s AND business_id = %s
         """,
         (reservation_id, business_id),
     )
@@ -1041,7 +1039,7 @@ def cancel_reservation(reservation_id):
         """
         UPDATE reservations
         SET status = 'CANCELED'
-        WHERE id = ? AND business_id = ?
+        WHERE id = %s AND business_id = %s
         """,
         (reservation_id, business_id),
     )
@@ -1061,11 +1059,9 @@ def cancel_reservation(reservation_id):
 # ------------------ RUN ------------------
 
 if __name__ == "__main__":
-    print("Using DB file:", DB_FILENAME)
-    init_db()
+    init_db()       # <-- creates tables automatically
+    app.run(host="0.0.0.0", port=10000)
 
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=False)
 
 
 

@@ -612,7 +612,7 @@ def reservations_page():
 # ------------------ ADMIN BUSINESSES ------------------ #
 
 
-from flask import render_template_string, request  # make sure this import exists at the top
+from flask import render_template_string, request  # make sure this is imported at the top
 
 @app.route("/admin/businesses", methods=["GET", "POST"])
 def admin_businesses():
@@ -638,7 +638,7 @@ def admin_businesses():
             )
             conn.commit()
 
-    # Now load all businesses
+    # Load all businesses
     c.execute(
         "SELECT id, name, provider, phone_number_id, timezone FROM businesses ORDER BY id"
     )
@@ -668,7 +668,8 @@ def admin_businesses():
         <td>{{ b.phone_number_id }}</td>
         <td>{{ b.timezone }}</td>
         <td><a href="/admin/{{ b.id }}/services">Manage services</a></td>
-        <td><a href="/dashboard %s business_id={{ b.id }}">Open dashboard</a></td>
+        <!-- 🔥 This link is EXACTLY the one that works when you paste it -->
+        <td><a href="/dashboard?business_id={{ b.id }}">Open dashboard</a></td>
       </tr>
       {% endfor %}
     </table>
@@ -698,6 +699,7 @@ def admin_businesses():
     </form>
     """
     return render_template_string(html, businesses=businesses)
+
 
 
 
@@ -938,8 +940,8 @@ def dashboard():
         <td>{{ r.time }}</td>
         <td>{{ r.status }}</td>
         <td>
-          <a href="/confirm/{{ r.id }}%s business_id={{ business_id }}">Confirm</a> |
-          <a href="/cancel/{{ r.id }}%s business_id={{ business_id }}">Cancel</a>
+          <a href="/confirm/{{ r.id }}?business_id={{ business_id }}">Confirm</a> |
+          <a href="/cancel/{{ r.id }}?business_id={{ business_id }}">Cancel</a>
         </td>
       </tr>
       {% endfor %}

@@ -1,11 +1,10 @@
 from flask import Blueprint, render_template, request, redirect, session, url_for
 from werkzeug.security import generate_password_hash, check_password_hash
-import sqlite3
 
 auth = Blueprint('auth', __name__)
 
 def get_db():
-    return sqlite3.connect("reservation.db")
+    return get_db_connection()
 
 # Signup route (for adding businesses manually for now)
 @auth.route('/register', methods=['GET', 'POST'])

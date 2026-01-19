@@ -630,9 +630,14 @@ def admin_businesses():
         if name and phone_number_id and access_token:
             c.execute(
                 """
-                INSERT INTO businesses
-                    (name, provider, phone_number_id, access_token, calendar_id, timezone)
+                INSERT INTO businesses (name, provider, phone_number_id, access_token, calendar_id, timezone)
                 VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (phone_number_id) DO UPDATE SET
+                  name = EXCLUDED.name,
+                  provider = EXCLUDED.provider,
+                  access_token = EXCLUDED.access_token,
+                  calendar_id = EXCLUDED.calendar_id,
+                  timezone = EXCLUDED.timezone
                 """,
                 (name, provider, phone_number_id, access_token, calendar_id, timezone),
             )

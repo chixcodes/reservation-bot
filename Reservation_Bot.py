@@ -64,7 +64,6 @@ def get_business_by_id(business_id: int):
 app = Flask(__name__)
 app.secret_key = "CHANGE_THIS_SECRET_KEY"  # change in production
 
-
 # ------------------ CONFIG (.env) ------------------
 
 load_dotenv()
@@ -532,6 +531,9 @@ def process_incoming_message(business, phone, text):
 
 # ------------------ WEBHOOK ------------------
 
+@app.route("/")
+def home():
+    return "OK", 200
 
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():

@@ -19,7 +19,7 @@ from flask import (
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from gcal import create_event  # your existing gcal helper
-
+import sys
 
 # ------------------ DB CONFIG ------------------
 DB_FILENAME = "reservation_v2.db"###
@@ -546,8 +546,12 @@ def webhook():
             return challenge, 200
         return "Forbidden", 403
 
+    raw = request.get_data(as_text=True)
+    print("RAW META:", raw, flush=True)
+
     data = request.get_json(silent=True)
-    print("INCOMING META:", data)
+    print("INCOMING META:", data, flush=True)
+    sys.stdout.flush()
 
     try:
         entry = data["entry"][0]
@@ -573,7 +577,7 @@ def webhook():
 
     business = get_business_by_phone_number_id(phone_number_id)
     if not business:
-        print("No business configured for phone_number_id", phone_number_id)
+        print("No business configured for phone_number_id", phone_number_id, flush=True)
         return "ok", 200
 
     return process_incoming_message(business, phone, text)

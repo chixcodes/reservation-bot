@@ -133,7 +133,8 @@ def send_message(to: str, text: str, business: dict):
         print("send_message: meta", r.status_code, r.text)
     except Exception as e:
         print("send_message error (meta):", e)
-
+    print("send_message status:", r.status_code, flush=True)
+    print("send_message body:", r.text, flush=True)
 
 def ai_pick_service(business: dict, user_text: str):
     """
@@ -574,12 +575,15 @@ def webhook():
     phone = message.get("from")
     text = message.get("text", {}).get("body", "").strip()
     phone_number_id = value["metadata"]["phone_number_id"]
+    print("phone:", phone, "text:", text, "phone_number_id:", phone_number_id, flush=True)
 
     business = get_business_by_phone_number_id(phone_number_id)
+    print("business lookup result:", dict(business) if business else None, flush=True)
     if not business:
         print("No business configured for phone_number_id", phone_number_id, flush=True)
         return "ok", 200
 
+    print("Calling process_incoming_message...", flush=True)
     return process_incoming_message(business, phone, text)
 
 

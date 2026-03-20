@@ -451,30 +451,38 @@ def process_incoming_message(business, phone, text):
         return "ok", 200
 
     # STEP 4 – TIME
-    if state and state["step"] == "time":
-        time = t
+    if state and state.get("step") == "awaiting_time":
+        time_ = normalize_time_str(t)
 
-        # Save reservation
+        if not time_:
+            send_message(
+                phone,
+                "Please send a valid time, like 16:00 or 4 PM.",
+                business,
+            )
+            return "ok", 200
+
+        state["time"] = time_
+
         save_reservation(
             business_id=business["id"],
             phone=phone,
             name=state["name"],
+            service=state["service"],
             date=state["date"],
-            time=time
+            time_=time_,
         )
 
-        # Send confirmation to user
         send_message(
             phone,
             f"✅ Reservation confirmed!\n\n"
             f"👤 Name: {state['name']}\n"
+            f"✂️ Service: {state['service']}\n"
             f"📅 Date: {state['date']}\n"
-            f"⏰ Time: {time}",
+            f"⏰ Time: {time_}",
             business,
         )
 
-
-        # 🔥 IMPORTANT
         user_state.pop(key, None)
         return "ok", 200
     return "ok", 200

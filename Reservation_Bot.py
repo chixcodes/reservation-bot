@@ -349,6 +349,17 @@ def process_incoming_message(business, phone, text):
 
     key = (business["id"], phone)
     state = user_state.get(key)
+    # GREETING
+    if lt in ["hi", "hello", "hey", "hii", "heyy", "hola", "مرحبا", "اهلا", "أهلا", "سلام"]:
+        send_message(
+            phone,
+            "Hi! Welcome 👋\n\n"
+            "How can I help you today?\n"
+            "• Type *book* to make a reservation\n"
+            "• Type *cancel* to cancel your reservation",
+            business,
+        )
+        return "ok", 200
 
     # START BOOKING
     if (
@@ -440,92 +451,32 @@ def process_incoming_message(business, phone, text):
         return "ok", 200
 
     # STEP 4 – TIME
-    if state and state.get("step") == "awaiting_time":
-        raw_time = t
-        raw_date = state.get("date", "")
+    if state and state["step"] == "time":
+        time = t
 
-        norm_time = normalize_time_str(raw_time)
-        if not norm_time:
-            send_message(
-                phone,
-                "Sorry, I couldn't understand the time. Please send something like 16:00 or 4 PM.",
-                business,
-            )
-            return "ok", 200
-
-        if is_taken(raw_date, norm_time):
-            suggestions = suggest_slots(raw_date, norm_time)
-            if suggestions:
-                msg = (
-                    f"❌ Sorry, {norm_time} on {raw_date} is already taken.\n\n"
-                    f"Available nearby times:\n"
-                    + "\n".join(f"• {s}" for s in suggestions)
-                    + "\n\nPlease choose one of these times."
-                )
-            else:
-                msg = (
-                    f"❌ Sorry, {norm_time} on {raw_date} is already taken, and I couldn't "
-                    f"find other free slots. Please send another time or date."
-                )
-            send_message(phone, msg, business)
-            return "ok", 200
-
-        state["time"] = norm_time
-
-        service_info = get_service_info(business["id"], state["service"])
-        price = service_info["price"]
-        duration = service_info["duration"]
-
+        # Save reservation
         save_reservation(
-            business["id"],
+            business_id=business["id"],
+            phone=phone,
+            name=state["name"],
+            date=state["date"],
+            time=time
+        )
+
+        # Send confirmation to user
+        send_message(
             phone,
-            state.get("name", ""),
-            state.get("service", ""),
-            state.get("date", ""),
-            state.get("time", ""),
-        )
-
-        confirmation_msg = (
             f"✅ Reservation confirmed!\n\n"
-            f"📌 *Service:* {state.get('service')}\n"
-            f"💵 *Price:* ${price:.2f}\n"
-            f"⏱ *Duration:* {duration} minutes\n"
-            f"📅 *Date:* {state.get('date')}\n"
-            f"⏰ *Time:* {state.get('time')}\n\n"
-            f"Thank you, {state.get('name')}!"
+            f"👤 Name: {state['name']}\n"
+            f"📅 Date: {state['date']}\n"
+            f"⏰ Time: {time}",
+            business,
         )
-        send_message(phone, confirmation_msg, business)
-
-        # GOOGLE CALENDAR
-        try:
-            summary = f"{state.get('service')} – {state.get('name')}"
-            description = (
-                f"From: {phone}\n"
-                f"Service: {state.get('service')}\n"
-                f"Price: {price}\n"
-                f"Duration: {duration} min\n"
-                f"When: {state.get('date')} {state.get('time')}"
-            )
-
-            # Use business-specific calendar if set, otherwise default to 'primary'
-            calendar_id = business.get("calendar_id") or "primary"
-
-            create_event(
-                summary,
-                state.get("date", ""),
-                state.get("time", ""),
-                description=description,
-                calendar_id=calendar_id,
-                duration_min=duration,
-            )
-
-        except Exception as e:
-            print("gcal error:", e)
 
 
-
-    # FALLBACK: stay silent instead of sending an extra confusing message
-    print("FALLBACK: message not handled:", text)
+        # 🔥 IMPORTANT
+        user_state.pop(key, None)
+        return "ok", 200
     return "ok", 200
 
 

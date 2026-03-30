@@ -314,7 +314,28 @@ def save_reservation(business_id, phone, name, service, date, time_):
     conn.close()
     print(f"SAVED (CONFIRMED) -> {name}, {service} on {date} at {time_}")
 
+def is_slot_taken(business_id, date, time_):
+    conn = get_db_connection()
+    cur = conn.cursor()
 
+    cur.execute(
+        """
+        SELECT 1
+        FROM reservations
+        WHERE business_id = %s
+          AND date = %s
+          AND time = %s
+          AND status = 'active'
+        LIMIT 1
+        """,
+        (business_id, date, time_)
+    )
+
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+
+    return row is not None
 
 def send_reservation_confirmation(phone, name, service, date, time, business):
     message = (
@@ -466,28 +487,36 @@ def process_incoming_message(business, phone, text):
 
         state["time"] = time_
 
+        # CHECK IF SLOT IS ALREADY TAKEN
+        if is_slot_taken(business["id"], state["date"], time_):
+            send_message(
+                phone,
+                f"Sorry, the slot on {state['date']} at {time_} is already taken.\nPlease choose another time.",
+                business,
+            )
+            return "ok", 200
+
         save_reservation(
-            business_id=business["id"],
-            phone=phone,
-            name=state["name"],
-            service=state["service"],
-            date=state["date"],
-            time_=time_,
+            business["id"],
+            phone,
+            state.get("name", ""),
+            state.get("service", ""),
+            state.get("date", ""),
+            state.get("time", ""),
         )
 
         send_message(
             phone,
             f"✅ Reservation confirmed!\n\n"
-            f"👤 Name: {state['name']}\n"
-            f"✂️ Service: {state['service']}\n"
-            f"📅 Date: {state['date']}\n"
-            f"⏰ Time: {time_}",
+            f"👤 Name: {state.get('name', '')}\n"
+            f"✂️ Service: {state.get('service', '')}\n"
+            f"📅 Date: {state.get('date', '')}\n"
+            f"⏰ Time: {state.get('time', '')}",
             business,
         )
 
         user_state.pop(key, None)
         return "ok", 200
-    return "ok", 200
 
 
 

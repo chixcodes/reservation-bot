@@ -1047,8 +1047,8 @@ def cancel_reservation(reservation_id):
 
     return redirect("/dashboard")
 
-@app.route("/temp/view-reservations", methods=["GET"])
-def temp_view_reservations():
+@app.route("/temp/list-tables", methods=["GET"])
+def temp_list_tables():
     try:
         admin_key = request.headers.get("X-Admin-Key", "")
         expected_key = os.getenv("TEMP_ADMIN_KEY", "")
@@ -1064,39 +1064,24 @@ def temp_view_reservations():
         cur = conn.cursor()
 
         cur.execute("""
-            SELECT id, business_id, phone, name, service, date, time, status
-            FROM reservations
-            ORDER BY id DESC
-            LIMIT 50
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+            ORDER BY table_name
         """)
 
-        rows = cur.fetchall()
-
-        reservations = []
-        for row in rows:
-            reservations.append({
-                "id": row[0],
-                "business_id": row[1],
-                "phone": row[2],
-                "name": row[3],
-                "service": row[4],
-                "date": str(row[5]),
-                "time": str(row[6]),
-                "status": row[7],
-            })
+        tables = [row[0] for row in cur.fetchall()]
 
         cur.close()
         conn.close()
 
-        return jsonify({
-            "ok": True,
-            "count": len(reservations),
-            "reservations": reservations
-        }), 200
+        return jsonify({"ok": True, "tables": tables}), 200
 
     except Exception as e:
-        print("temp_view_reservations error:", str(e))
+        print("temp_list_tables error:", str(e))
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
 
 # ------------------ RUN ------------------
 

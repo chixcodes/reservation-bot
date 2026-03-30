@@ -1081,7 +1081,40 @@ def temp_list_tables():
         print("temp_list_tables error:", str(e))
         return jsonify({"ok": False, "error": str(e)}), 500
 
+@app.route("/temp/table-columns/<table_name>", methods=["GET"])
+def temp_table_columns(table_name):
+    try:
+        admin_key = request.headers.get("X-Admin-Key", "")
+        expected_key = os.getenv("TEMP_ADMIN_KEY", "")
 
+        if not expected_key or admin_key != expected_key:
+            return jsonify({"ok": False, "error": "unauthorized"}), 403
+
+        database_url = os.getenv("DATABASE_URL")
+        if not database_url:
+            return jsonify({"ok": False, "error": "DATABASE_URL is missing"}), 500
+
+        conn = psycopg2.connect(database_url, sslmode="require")
+        cur = conn.cursor()
+
+        cur.execute("""
+            SELECT column_name, data_type
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = %s
+            ORDER BY ordinal_position
+        """, (table_name,))
+
+        columns = [{"name": row[0], "type": row[1]} for row in cur.fetchall()]
+
+        cur.close()
+        conn.close()
+
+        return jsonify({"ok": True, "table": table_name, "columns": columns}), 200
+
+    except Exception as e:
+        print("temp_table_columns error:", str(e))
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 # ------------------ RUN ------------------
 

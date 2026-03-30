@@ -676,61 +676,6 @@ def admin_businesses():
     """
     return render_template_string(html, businesses=businesses)
 
-@app.route("/temp/update-whatsapp-token", methods=["POST"])
-def temp_update_whatsapp_token():
-    try:
-        admin_key = request.headers.get("X-Admin-Key", "")
-        expected_key = os.getenv("TEMP_ADMIN_KEY", "")
-
-        if not expected_key or admin_key != expected_key:
-            return jsonify({"ok": False, "error": "unauthorized"}), 403
-
-        data = request.get_json(silent=True) or {}
-        business_id = int(data.get("business_id", 1))
-        access_token = (data.get("access_token") or "").strip()
-
-        if not access_token:
-            return jsonify({"ok": False, "error": "access_token is required"}), 400
-
-        database_url = os.getenv("DATABASE_URL")
-        if not database_url:
-            return jsonify({"ok": False, "error": "DATABASE_URL is missing"}), 500
-
-        conn = psycopg2.connect(database_url, sslmode="require")
-        cur = conn.cursor()
-
-        cur.execute(
-            """
-            UPDATE businesses
-            SET access_token = %s
-            WHERE id = %s
-            RETURNING id, name, phone_number_id;
-            """,
-            (access_token, business_id)
-        )
-
-        row = cur.fetchone()
-        conn.commit()
-
-        cur.close()
-        conn.close()
-
-        if not row:
-            return jsonify({"ok": False, "error": "business not found"}), 404
-
-        return jsonify({
-            "ok": True,
-            "message": "WhatsApp token updated",
-            "business": {
-                "id": row[0],
-                "name": row[1],
-                "phone_number_id": row[2]
-            }
-        }), 200
-
-    except Exception as e:
-        print("temp_update_whatsapp_token error:", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
 
 # ------------------ ADMIN SERVICES ------------------
 

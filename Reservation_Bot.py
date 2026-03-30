@@ -692,7 +692,11 @@ def temp_update_whatsapp_token():
         if not access_token:
             return jsonify({"ok": False, "error": "access_token is required"}), 400
 
-        conn = get_db_connection()
+        database_url = os.getenv("DATABASE_URL")
+        if not database_url:
+            return jsonify({"ok": False, "error": "DATABASE_URL is missing"}), 500
+
+        conn = psycopg2.connect(database_url, sslmode="require")
         cur = conn.cursor()
 
         cur.execute(
@@ -707,6 +711,7 @@ def temp_update_whatsapp_token():
 
         row = cur.fetchone()
         conn.commit()
+
         cur.close()
         conn.close()
 

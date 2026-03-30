@@ -1116,6 +1116,47 @@ def temp_table_columns(table_name):
         print("temp_table_columns error:", str(e))
         return jsonify({"ok": False, "error": str(e)}), 500
 
+@app.route("/temp/view-reservations", methods=["GET"])
+def temp_view_reservations():
+    try:
+        admin_key = request.headers.get("X-Admin-Key", "")
+        expected_key = os.getenv("TEMP_ADMIN_KEY", "")
+
+        if not expected_key or admin_key != expected_key:
+            return jsonify({"ok": False, "error": "unauthorized"}), 403
+
+        database_url = os.getenv("DATABASE_URL")
+        if not database_url:
+            return jsonify({"ok": False, "error": "DATABASE_URL is missing"}), 500
+
+        conn = psycopg2.connect(database_url, sslmode="require")
+        cur = conn.cursor()
+
+        cur.execute("SELECT * FROM reservations ORDER BY id DESC LIMIT 50")
+        rows = cur.fetchall()
+
+        column_names = [desc[0] for desc in cur.description]
+
+        reservations = []
+        for row in rows:
+            item = {}
+            for i, value in enumerate(row):
+                item[column_names[i]] = str(value) if value is not None else None
+            reservations.append(item)
+
+        cur.close()
+        conn.close()
+
+        return jsonify({
+            "ok": True,
+            "count": len(reservations),
+            "reservations": reservations
+        }), 200
+
+    except Exception as e:
+        print("temp_view_reservations error:", str(e))
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 # ------------------ RUN ------------------
 
 if __name__ == "__main__":

@@ -796,48 +796,6 @@ def admin_services(business_id):
         business_id=business_id,
     )
 
-@app.route("/temp/view-reservations", methods=["GET"])
-def temp_view_reservations():
-    try:
-        admin_key = request.headers.get("X-Admin-Key", "")
-        expected_key = os.getenv("TEMP_ADMIN_KEY", "")
-
-        if not expected_key or admin_key != expected_key:
-            return jsonify({"ok": False, "error": "unauthorized"}), 403
-
-        conn = psycopg2.connect(os.getenv("DATABASE_URL"), sslmode="require")
-        cur = conn.cursor()
-
-        cur.execute("""
-            SELECT id, business_id, phone, name, service, date, time, status
-            FROM reservations
-            ORDER BY id DESC
-            LIMIT 50
-        """)
-
-        rows = cur.fetchall()
-
-        cur.close()
-        conn.close()
-
-        data = []
-        for row in rows:
-            data.append({
-                "id": row[0],
-                "business_id": row[1],
-                "phone": row[2],
-                "name": row[3],
-                "service": row[4],
-                "date": str(row[5]),
-                "time": str(row[6]),
-                "status": row[7],
-            })
-
-        return jsonify({"ok": True, "reservations": data}), 200
-
-    except Exception as e:
-        print("temp_view_reservations error:", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
 
 # ------------------ AUTH: REGISTER / LOGIN / LOGOUT ------------------
 
@@ -1101,6 +1059,48 @@ def cancel_reservation(reservation_id):
 
     return redirect("/dashboard")
 
+@app.route("/temp/view-reservations", methods=["GET"])
+def temp_view_reservations():
+    try:
+        admin_key = request.headers.get("X-Admin-Key", "")
+        expected_key = os.getenv("TEMP_ADMIN_KEY", "")
+
+        if not expected_key or admin_key != expected_key:
+            return jsonify({"ok": False, "error": "unauthorized"}), 403
+
+        conn = psycopg2.connect(os.getenv("DATABASE_URL"), sslmode="require")
+        cur = conn.cursor()
+
+        cur.execute("""
+            SELECT id, business_id, phone, name, service, date, time, status
+            FROM reservations
+            ORDER BY id DESC
+            LIMIT 50
+        """)
+
+        rows = cur.fetchall()
+
+        cur.close()
+        conn.close()
+
+        data = []
+        for row in rows:
+            data.append({
+                "id": row[0],
+                "business_id": row[1],
+                "phone": row[2],
+                "name": row[3],
+                "service": row[4],
+                "date": str(row[5]),
+                "time": str(row[6]),
+                "status": row[7],
+            })
+
+        return jsonify({"ok": True, "reservations": data}), 200
+
+    except Exception as e:
+        print("temp_view_reservations error:", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 # ------------------ RUN ------------------
 

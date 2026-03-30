@@ -249,18 +249,6 @@ def normalize_time_str(tstr: str):
     return None
 
 
-def is_taken(date_str, time_str):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute(
-        "SELECT 1 FROM reservations WHERE date=%s AND time=%s LIMIT 1",
-        (date_str, time_str),
-    )
-    hit = c.fetchone() is not None
-    conn.close()
-    return hit
-
-
 def suggest_slots(
     date_str,
     requested_time_str,
@@ -288,7 +276,7 @@ def suggest_slots(
     free = []
     for t in slots:
         hhmm = f"{t.hour:02d}:{t.minute:02d}"
-        if not is_taken(date_str, hhmm):
+        if not is_slot_taken(date_str, hhmm):
             free.append(t)
 
     def minutes(t):
@@ -1068,7 +1056,11 @@ def temp_view_reservations():
         if not expected_key or admin_key != expected_key:
             return jsonify({"ok": False, "error": "unauthorized"}), 403
 
-        conn = psycopg2.connect(os.getenv("DATABASE_URL"), sslmode="require")
+        database_url = os.getenv("DATABASE_URL")
+        if not database_url:
+            return jsonify({"ok": False, "error": "DATABASE_URL is missing"}), 500
+
+        conn = psycopg2.connect(database_url, sslmode="require")
         cur = conn.cursor()
 
         cur.execute("""
@@ -1080,12 +1072,9 @@ def temp_view_reservations():
 
         rows = cur.fetchall()
 
-        cur.close()
-        conn.close()
-
-        data = []
+        reservations = []
         for row in rows:
-            data.append({
+            reservations.append({
                 "id": row[0],
                 "business_id": row[1],
                 "phone": row[2],
@@ -1096,10 +1085,17 @@ def temp_view_reservations():
                 "status": row[7],
             })
 
-        return jsonify({"ok": True, "reservations": data}), 200
+        cur.close()
+        conn.close()
+
+        return jsonify({
+            "ok": True,
+            "count": len(reservations),
+            "reservations": reservations
+        }), 200
 
     except Exception as e:
-        print("temp_view_reservations error:", e)
+        print("temp_view_reservations error:", str(e))
         return jsonify({"ok": False, "error": str(e)}), 500
 
 # ------------------ RUN ------------------

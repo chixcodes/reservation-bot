@@ -65,6 +65,11 @@ def init_db():
         );
     """)
 
+    c.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS unique_confirmed_slot
+        ON reservations (business_id, date, time)
+        WHERE status = 'CONFIRMED';
+    """)
     conn.commit()
     conn.close()
     print("PostgreSQL schema initialized successfully.")

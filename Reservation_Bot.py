@@ -111,9 +111,7 @@ SERVICE_KEYWORDS = {
 
 
 def send_message(to: str, text: str, business: dict):
-    """
-    Send a WhatsApp message via Meta Cloud API.
-    """
+
     if not business.get("phone_number_id") or not business.get("access_token"):
         print("send_message: missing phone_number_id or access_token for business")
         return
@@ -290,40 +288,46 @@ def suggest_slots(
 
 def save_reservation(business_id, phone, name, service, date, time_):
     conn = get_db_connection()
-    c = conn.cursor()
-    c.execute(
-        """
-        INSERT INTO reservations (business_id, customer_name, customer_phone, service, date, time, status)
-        VALUES (%s, %s, %s, %s, %s, %s, 'CONFIRMED')
-        """,
-        (business_id, name, phone, service, date, time_),
-    )
-    conn.commit()
-    conn.close()
-    print(f"SAVED (CONFIRMED) -> {name}, {service} on {date} at {time_}")
+    try:
+        c = conn.cursor()
+        c.execute(
+            """
+            INSERT INTO reservations (business_id, customer_name, customer_phone, service, date, time, status)
+            VALUES (%s, %s, %s, %s, %s, %s, 'CONFIRMED')
+            RETURNING id
+            """,
+            (business_id, name, phone, service, date, time_),
+        )
+        new_id = c.fetchone()["id"]
+        conn.commit()
+        print(f"SAVED (CONFIRMED) -> id={new_id}, {name}, {service} on {date} at {time_}")
+        return new_id
+    except Exception as e:
+        conn.rollback()
+        print("save_reservation error:", str(e))
+        raise
+    finally:
+        conn.close()
 
 def is_slot_taken(business_id, date, time_):
     conn = get_db_connection()
-    cur = conn.cursor()
-
-    cur.execute(
+    c = conn.cursor()
+    c.execute(
         """
         SELECT 1
         FROM reservations
         WHERE business_id = %s
           AND date = %s
           AND time = %s
-          AND status = 'active'
+          AND status = 'CONFIRMED'
         LIMIT 1
         """,
-        (business_id, date, time_)
+        (business_id, date, time_),
     )
-
-    row = cur.fetchone()
-    cur.close()
+    row = c.fetchone()
     conn.close()
-
     return row is not None
+
 
 def send_reservation_confirmation(phone, name, service, date, time, business):
     message = (

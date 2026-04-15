@@ -203,23 +203,32 @@ def get_service_info(business_id, service_name):
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
-        "SELECT price, duration_min FROM services WHERE business_id=%s AND lower(name)=lower(%s)",
+        """
+        SELECT price, duration_min
+        FROM services
+        WHERE business_id = %s AND lower(name) = lower(%s)
+        """,
         (business_id, service_name),
     )
     row = c.fetchone()
     conn.close()
+
     if row:
-        return {"price": float(row[0]), "duration": int(row[1])}
+        return {
+            "price": float(row["price"] or 0),
+            "duration": int(row["duration_min"] or 45),
+        }
+
     return {"price": 0.0, "duration": 45}
 
 
 def get_service_names_for_business(business_id):
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT name FROM services WHERE business_id=%s", (business_id,))
+    c.execute("SELECT name FROM services WHERE business_id = %s", (business_id,))
     rows = c.fetchall()
     conn.close()
-    return [r[0] for r in rows]
+    return [r["name"] for r in rows]
 
 
 def normalize_time_str(tstr: str):
@@ -330,12 +339,16 @@ def is_slot_taken(business_id, date, time_):
 
 
 def send_reservation_confirmation(phone, name, service, date, time, business):
+    service_info = get_service_info(business["id"], service)
+    total_price = service_info["price"]
+
     message = (
         f"✅ Your reservation is confirmed!\n"
         f"Name: {name}\n"
         f"Service: {service}\n"
         f"Date: {date}\n"
-        f"Time: {time}\n\n"
+        f"Time: {time}\n"
+        f"Total Price: ${total_price:.2f}\n\n"
         f"Thank you for booking with us 🤍"
     )
     send_message(phone, message, business)
@@ -483,32 +496,42 @@ def process_incoming_message(business, phone, text):
         if is_slot_taken(business["id"], state["date"], time_):
             send_message(
                 phone,
-                f"Sorry, the slot on {state['date']} at {time_} is already taken.\nPlease choose another time.",
+                f"Sorry, {state['date']} at {time_} is already booked. Please choose another time 🤍",
                 business,
             )
             return "ok", 200
 
-        save_reservation(
-            business["id"],
-            phone,
-            state.get("name", ""),
-            state.get("service", ""),
-            state.get("date", ""),
-            state.get("time", ""),
-        )
+        try:
+            reservation_id = save_reservation(
+                business["id"],
+                phone,
+                state.get("name", ""),
+                state.get("service", ""),
+                state.get("date", ""),
+                state.get("time", ""),
+            )
+            print("Reservation saved with id:", reservation_id)
 
-        send_message(
-            phone,
-            f"✅ Reservation confirmed!\n\n"
-            f"👤 Name: {state.get('name', '')}\n"
-            f"✂️ Service: {state.get('service', '')}\n"
-            f"📅 Date: {state.get('date', '')}\n"
-            f"⏰ Time: {state.get('time', '')}",
-            business,
-        )
+            send_reservation_confirmation(
+                phone,
+                state.get("name", ""),
+                state.get("service", ""),
+                state.get("date", ""),
+                state.get("time", ""),
+                business,
+            )
 
-        user_state.pop(key, None)
-        return "ok", 200
+            user_state.pop(key, None)
+            return "ok", 200
+
+        except Exception as e:
+            print("STEP 4 save error:", str(e))
+            send_message(
+                phone,
+                "Something went wrong while saving your reservation. Please try again.",
+                business,
+            )
+            return "ok", 200
 
 
 

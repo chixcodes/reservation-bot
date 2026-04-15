@@ -52,3 +52,13 @@ def create_event(summary, date_str, time_str, description="", calendar_id="prima
         "end":   {"dateTime": end_iso,   "timeZone": TIMEZONE},
     }
     return svc.events().insert(calendarId=calendar_id, body=body).execute()
+
+def delete_event(event_id, calendar_id="primary"):
+    svc = _service()
+    try:
+        svc.events().delete(calendarId=calendar_id, eventId=event_id).execute()
+        print(f"Google Calendar event deleted: {event_id}")
+        return True
+    except Exception as e:
+        print("delete_event error:", e)
+        return False

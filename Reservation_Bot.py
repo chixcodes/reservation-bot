@@ -8,7 +8,7 @@ import json
 from datetime import datetime, timedelta
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from gcal import create_event
+from gcal import create_event, delete_event
 from dotenv import load_dotenv
 from flask import (
     Flask,
@@ -394,6 +394,57 @@ def add_reservation_to_google_calendar(name, service, date, time_):
         print("add_reservation_to_google_calendar error:", str(e))
         return None
 
+def save_google_event_id(reservation_id, google_event_id):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        UPDATE reservations
+        SET google_event_id = %s
+        WHERE id = %s
+        """,
+        (google_event_id, reservation_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_confirmed_reservations_for_phone(business_id, phone):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT id, google_event_id, customer_name, service, date, time
+        FROM reservations
+        WHERE business_id = %s
+          AND customer_phone = %s
+          AND status = 'CONFIRMED'
+        ORDER BY id DESC
+        """,
+        (business_id, phone),
+    )
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+
+def mark_reservations_cancelled_by_phone(business_id, phone):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        UPDATE reservations
+        SET status = 'CANCELLED'
+        WHERE business_id = %s
+          AND customer_phone = %s
+          AND status = 'CONFIRMED'
+        """,
+        (business_id, phone),
+    )
+    conn.commit()
+    affected = c.rowcount
+    conn.close()
+    return affected
 
 # ------------------ CONVERSATION LOGIC ------------------
 
@@ -430,18 +481,31 @@ def process_incoming_message(business, phone, text):
         return "ok", 200
 
     # CANCEL BOOKING
-    if "cancel" in lt or "delete" in lt:
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute(
-            "DELETE FROM reservations WHERE business_id=%s AND customer_phone=%s",
-            (business["id"], phone),
-        )
-        conn.commit()
-        conn.close()
-        user_state.pop(key, None)
+    if "cancel" in lt:
+        reservations = get_confirmed_reservations_for_phone(business["id"], phone)
+
+        if not reservations:
+            send_message(
+                phone,
+                "You have no active reservations to cancel.",
+                business,
+            )
+            return "ok", 200
+
+        deleted_count = 0
+        for r in reservations:
+            event_id = r.get("google_event_id")
+            if event_id:
+                if delete_event(event_id, calendar_id="primary"):
+                    deleted_count += 1
+
+        cancelled_count = mark_reservations_cancelled_by_phone(business["id"], phone)
+
         send_message(
-            phone, "✅ All reservations under your number have been cancelled.", business
+            phone,
+            f"✅ Cancelled {cancelled_count} reservation(s).\n"
+            f"🗓 Removed {deleted_count} event(s) from Google Calendar.",
+            business,
         )
         return "ok", 200
 
@@ -548,7 +612,10 @@ def process_incoming_message(business, phone, text):
             )
 
             if gcal_event:
-                print("Reservation added to Google Calendar")
+                event_id = gcal_event.get("id")
+                print("Reservation added to Google Calendar:", event_id)
+                if event_id:
+                    save_google_event_id(reservation_id, event_id)
             else:
                 print("Google Calendar event was not created")
 
@@ -1080,7 +1147,7 @@ def cancel_reservation(reservation_id):
     c = conn.cursor()
     c.execute(
         """
-        SELECT customer_phone, customer_name, service, date, time
+        SELECT customer_phone, customer_name, service, date, time, google_event_id
         FROM reservations
         WHERE id = %s AND business_id = %s
         """,
@@ -1092,7 +1159,22 @@ def cancel_reservation(reservation_id):
         conn.close()
         return redirect("/dashboard")
 
-    phone, name, service, date, time = row
+    phone = row["customer_phone"]
+    name = row["customer_name"]
+    service = row["service"]
+    date = row["date"]
+    time = row["time"]
+    google_event_id = row.get("google_event_id")
+
+    business = get_business_by_id(business_id)
+
+    # Delete Google Calendar event first
+    if business and google_event_id:
+        try:
+            deleted = delete_event(google_event_id, calendar_id="primary")
+            print("Google Calendar delete result:", deleted)
+        except Exception as e:
+            print("Error deleting Google Calendar event:", e)
 
     c.execute(
         """
@@ -1105,7 +1187,6 @@ def cancel_reservation(reservation_id):
     conn.commit()
     conn.close()
 
-    business = get_business_by_id(business_id)
     if business:
         try:
             send_reservation_cancellation(phone, name, service, date, time, business)

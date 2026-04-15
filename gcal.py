@@ -36,9 +36,54 @@ def _service():
 
 def parse_when(date_str, time_str, duration_min=45):
     tz = pytz.timezone(TIMEZONE)
-    start = dtparse.parse(f"{date_str} {time_str}", dayfirst=False)  # accept "2025-11-10 6 PM" etc.
+
+    arabic_digits_map = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+    date_str = (date_str or "").translate(arabic_digits_map).strip()
+    time_str = (time_str or "").translate(arabic_digits_map).strip()
+
+    month_map = {
+        "كانون الثاني": "January",
+        "يناير": "January",
+        "شباط": "February",
+        "فبراير": "February",
+        "آذار": "March",
+        "اذار": "March",
+        "مارس": "March",
+        "نيسان": "April",
+        "ابريل": "April",
+        "أبريل": "April",
+        "أيار": "May",
+        "مايو": "May",
+        "حزيران": "June",
+        "يونيو": "June",
+        "تموز": "July",
+        "يوليو": "July",
+        "آب": "August",
+        "اغسطس": "August",
+        "أغسطس": "August",
+        "أيلول": "September",
+        "سبتمبر": "September",
+        "تشرين الأول": "October",
+        "اكتوبر": "October",
+        "أكتوبر": "October",
+        "تشرين الثاني": "November",
+        "نوفمبر": "November",
+        "كانون الأول": "December",
+        "ديسمبر": "December",
+    }
+
+    normalized_date = date_str
+    for ar, en in month_map.items():
+        normalized_date = normalized_date.replace(ar, en)
+
+    dt_text = f"{normalized_date} {time_str}"
+    print("GCAL normalized datetime:", dt_text)
+
+    start = dtparse.parse(dt_text, dayfirst=True, fuzzy=True)
+
     if start.tzinfo is None:
         start = tz.localize(start)
+
     end = start + timedelta(minutes=duration_min)
     return start.isoformat(), end.isoformat()
 

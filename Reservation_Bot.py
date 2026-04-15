@@ -341,9 +341,11 @@ def is_slot_taken(business_id, date, time_):
     return row is not None
 
 
-def send_reservation_confirmation(phone, name, service, date, time, business):
+def send_reservation_confirmation(phone, name, service, date, time, business, calendar_added=False):
     service_info = get_service_info(business["id"], service)
     total_price = service_info["price"]
+
+    calendar_line = "\n🗓 Also added to our Google Calendar." if calendar_added else ""
 
     message = (
         f"✅ Your reservation is confirmed!\n"
@@ -351,7 +353,8 @@ def send_reservation_confirmation(phone, name, service, date, time, business):
         f"Service: {service}\n"
         f"Date: {date}\n"
         f"Time: {time}\n"
-        f"Total Price: ${total_price:.2f}\n\n"
+        f"Total Price: ${total_price:.2f}"
+        f"{calendar_line}\n\n"
         f"Thank you for booking with us 🤍"
     )
     send_message(phone, message, business)
@@ -468,8 +471,9 @@ def is_booking_intent(text):
     t = (text or "").strip().lower()
     booking_keywords = [
         "book", "booking", "reserve", "reservation", "appointment",
-        "احجز", "أحجز", "حجز", "موعد", "احجزلي", "أحجزلي",
-        "بدي احجز", "بدي حجز", "اريد احجز", "أريد أحجز", "عايز احجز"
+        "bonjour je veux reserver", "réserver", "reserver", "rdv",
+        "احجز", "أحجز", "حجز", "موعد", "بدي احجز", "اريد احجز",
+        "bede ehjoz", "bade ehjoz", "ehjoz", "ehجز", "7جز", "7joz"
     ]
     return any(k in t for k in booking_keywords)
 
@@ -477,9 +481,9 @@ def is_booking_intent(text):
 def is_cancel_intent(text):
     t = (text or "").strip().lower()
     cancel_keywords = [
-        "cancel", "cancellation",
-        "الغاء", "إلغاء", "الغي", "ألغي",
-        "الغاء الحجز", "إلغاء الحجز", "بدي الغي", "بدي ألغي"
+        "cancel", "cancellation", "annuler", "annule", "supprimer reservation",
+        "الغاء", "إلغاء", "الغي", "بدي الغي",
+        "bede elghe", "bade elghe", "elghe", "elghi"
     ]
     return any(k in t for k in cancel_keywords)
 
@@ -545,7 +549,7 @@ def tr(lang, key, **kwargs):
 def process_incoming_message(business, phone, text):
     global user_state
 
-    t = text.strip()
+    t = (text or "").strip()
     lt = t.lower()
 
     key = (business["id"], phone)
@@ -554,7 +558,12 @@ def process_incoming_message(business, phone, text):
     lang = state.get("lang") if state and state.get("lang") else detect_lang(t)
 
     # GREETING
-    if lt in ["hi", "hello", "hey", "hii", "heyy", "hola", "مرحبا", "اهلا", "أهلا", "سلام", "bonjour", "salut"]:
+    if lt in [
+        "hi", "hello", "hey", "hii", "heyy", "hola",
+        "bonjour", "salut",
+        "مرحبا", "اهلا", "أهلا", "سلام",
+        "hi kifak", "hi kifik", "kifak", "kifik"
+    ]:
         send_message(phone, tr(lang, "greeting"), business)
         return "ok", 200
 
@@ -592,13 +601,14 @@ def process_incoming_message(business, phone, text):
     if state and state.get("step") == "awaiting_name":
         lang = state.get("lang", lang)
 
-        # Protect against user repeating "book" / "احجز"
+        # User repeated a command instead of giving a name
         if is_booking_intent(t) or is_cancel_intent(t):
             send_message(phone, tr(lang, "ask_name"), business)
             return "ok", 200
 
         state["name"] = t
         state["step"] = "awaiting_service"
+
         send_message(
             phone,
             tr(lang, "ask_service", name=t),
@@ -611,8 +621,8 @@ def process_incoming_message(business, phone, text):
         lang = state.get("lang", lang)
         lt2 = t.lower()
 
-        # If user repeats booking words here, ask for service again
-        if is_booking_intent(t):
+        # User repeated a command instead of giving a service
+        if is_booking_intent(t) or is_cancel_intent(t):
             send_message(
                 phone,
                 tr(lang, "ask_service", name=state.get("name", "")),
@@ -645,6 +655,7 @@ def process_incoming_message(business, phone, text):
 
         state["service"] = normalized
         state["step"] = "awaiting_date"
+
         send_message(
             phone,
             tr(lang, "ask_date", service=normalized),
@@ -655,14 +666,31 @@ def process_incoming_message(business, phone, text):
     # STEP 3 – DATE
     if state and state.get("step") == "awaiting_date":
         lang = state.get("lang", lang)
+
+        # User repeated a command instead of giving a date
+        if is_booking_intent(t) or is_cancel_intent(t):
+            send_message(
+                phone,
+                tr(lang, "ask_date", service=state.get("service", "")),
+                business,
+            )
+            return "ok", 200
+
         state["date"] = t
         state["step"] = "awaiting_time"
+
         send_message(phone, tr(lang, "ask_time"), business)
         return "ok", 200
 
     # STEP 4 – TIME
     if state and state.get("step") == "awaiting_time":
         lang = state.get("lang", lang)
+
+        # User repeated a command instead of giving a time
+        if is_booking_intent(t) or is_cancel_intent(t):
+            send_message(phone, tr(lang, "ask_time"), business)
+            return "ok", 200
+
         time_ = normalize_time_str(t)
 
         if not time_:
@@ -712,6 +740,7 @@ def process_incoming_message(business, phone, text):
                 state.get("date", ""),
                 state.get("time", ""),
                 business,
+                calendar_added=bool(gcal_event),
             )
 
             user_state.pop(key, None)

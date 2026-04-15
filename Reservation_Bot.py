@@ -21,8 +21,9 @@ from flask import (
     jsonify,
 )
 from werkzeug.security import generate_password_hash, check_password_hash
-
-from gcal import create_event  # your existing gcal helper
+from datetime import datetime
+from dateutil import parser as dtparse
+import pytz
 import sys
 
 # ------------------ DB CONFIG ------------------
@@ -540,11 +541,163 @@ def tr(lang, key, **kwargs):
             "ar": "صار خطأ أثناء حفظ الحجز. جرب مرة ثانية.",
             "fr": "Une erreur s’est produite أثناء حفظ la réservation. Veuillez réessayer.",
         },
+        "invalid_date": {
+            "en": "Please send a valid date, like 2026-04-20 or 20 April.",
+            "ar": "من فضلك ابعت تاريخ صحيح، مثل 2026-04-20 أو 20 نيسان.",
+            "fr": "Veuillez envoyer une date valide, comme 2026-04-20 ou 20 avril.",
+        },
+        "closed_day": {
+            "en": "Sorry, we’re closed on that day. Please choose another date.",
+            "ar": "عذراً، نحن مغلقون في هذا اليوم. اختار تاريخ تاني.",
+            "fr": "Désolé, nous sommes fermés ce jour-là. Choisissez une autre date.",
+        },
+        "outside_hours": {
+            "en": "That time is outside business hours. Please choose another time.",
+            "ar": "هذا الوقت خارج ساعات العمل. اختار وقت تاني.",
+            "fr": "Cette heure est en dehors des horaires d’ouverture. Choisissez une autre heure.",
+        },
     }
 
     lang_messages = messages.get(key, {})
     template = lang_messages.get(lang) or lang_messages.get("en") or key
     return template.format(**kwargs)
+from datetime import datetime
+from dateutil import parser as dtparse
+import pytz
+
+WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+
+def normalize_booking_date(date_str):
+    tz = pytz.timezone("Asia/Beirut")
+
+    arabic_digits_map = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+    date_str = (date_str or "").translate(arabic_digits_map).strip()
+
+    month_map = {
+        "كانون الثاني": "January",
+        "يناير": "January",
+        "شباط": "February",
+        "فبراير": "February",
+        "آذار": "March",
+        "اذار": "March",
+        "مارس": "March",
+        "نيسان": "April",
+        "ابريل": "April",
+        "أبريل": "April",
+        "أيار": "May",
+        "مايو": "May",
+        "حزيران": "June",
+        "يونيو": "June",
+        "تموز": "July",
+        "يوليو": "July",
+        "آب": "August",
+        "اغسطس": "August",
+        "أغسطس": "August",
+        "أيلول": "September",
+        "سبتمبر": "September",
+        "تشرين الأول": "October",
+        "اكتوبر": "October",
+        "أكتوبر": "October",
+        "تشرين الثاني": "November",
+        "نوفمبر": "November",
+        "كانون الأول": "December",
+        "ديسمبر": "December",
+    }
+
+    normalized = date_str
+    for ar, en in month_map.items():
+        normalized = normalized.replace(ar, en)
+
+    dt = dtparse.parse(normalized, dayfirst=True, fuzzy=True)
+
+    if dt.tzinfo is None:
+        dt = tz.localize(dt)
+
+    return dt.date().isoformat()
+
+
+def ensure_default_hours(business_id):
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    defaults = [
+        (0, False, "09:00", "18:00"),
+        (1, False, "09:00", "18:00"),
+        (2, False, "09:00", "18:00"),
+        (3, False, "09:00", "18:00"),
+        (4, False, "09:00", "18:00"),
+        (5, False, "09:00", "18:00"),
+        (6, True, None, None),
+    ]
+
+    for weekday, is_closed, open_time, close_time in defaults:
+        c.execute(
+            """
+            INSERT INTO business_hours (business_id, weekday, is_closed, open_time, close_time)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (business_id, weekday) DO NOTHING
+            """,
+            (business_id, weekday, is_closed, open_time, close_time),
+        )
+
+    conn.commit()
+    conn.close()
+
+
+def get_day_rules(business_id, date_iso):
+    target_date = datetime.strptime(date_iso, "%Y-%m-%d").date()
+    weekday = target_date.weekday()
+
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    c.execute(
+        """
+        SELECT id
+        FROM blocked_dates
+        WHERE business_id = %s AND blocked_date = %s
+        """,
+        (business_id, date_iso),
+    )
+    blocked = c.fetchone()
+    if blocked:
+        conn.close()
+        return {"blocked": True, "closed": True, "reason": "blocked_date"}
+
+    c.execute(
+        """
+        SELECT weekday, is_closed,
+               TO_CHAR(open_time, 'HH24:MI') AS open_time,
+               TO_CHAR(close_time, 'HH24:MI') AS close_time
+        FROM business_hours
+        WHERE business_id = %s AND weekday = %s
+        """,
+        (business_id, weekday),
+    )
+    row = c.fetchone()
+    conn.close()
+
+    if not row:
+        return {"blocked": False, "closed": False, "open_time": "09:00", "close_time": "18:00"}
+
+    if row["is_closed"]:
+        return {"blocked": False, "closed": True, "reason": "weekly_closed"}
+
+    return {
+        "blocked": False,
+        "closed": False,
+        "open_time": row["open_time"],
+        "close_time": row["close_time"],
+    }
+
+
+def is_time_within_business_hours(time_str, open_time, close_time):
+    chosen = datetime.strptime(time_str, "%H:%M").time()
+    start = datetime.strptime(open_time, "%H:%M").time()
+    end = datetime.strptime(close_time, "%H:%M").time()
+    return start <= chosen <= end
+
 
 def process_incoming_message(business, phone, text):
     global user_state
@@ -667,7 +820,6 @@ def process_incoming_message(business, phone, text):
     if state and state.get("step") == "awaiting_date":
         lang = state.get("lang", lang)
 
-        # User repeated a command instead of giving a date
         if is_booking_intent(t) or is_cancel_intent(t):
             send_message(
                 phone,
@@ -676,7 +828,18 @@ def process_incoming_message(business, phone, text):
             )
             return "ok", 200
 
-        state["date"] = t
+        try:
+            normalized_date = normalize_booking_date(t)
+        except Exception:
+            send_message(phone, tr(lang, "invalid_date"), business)
+            return "ok", 200
+
+        day_rules = get_day_rules(business["id"], normalized_date)
+        if day_rules.get("closed"):
+            send_message(phone, tr(lang, "closed_day"), business)
+            return "ok", 200
+
+        state["date"] = normalized_date
         state["step"] = "awaiting_time"
 
         send_message(phone, tr(lang, "ask_time"), business)
@@ -686,7 +849,6 @@ def process_incoming_message(business, phone, text):
     if state and state.get("step") == "awaiting_time":
         lang = state.get("lang", lang)
 
-        # User repeated a command instead of giving a time
         if is_booking_intent(t) or is_cancel_intent(t):
             send_message(phone, tr(lang, "ask_time"), business)
             return "ok", 200
@@ -698,6 +860,15 @@ def process_incoming_message(business, phone, text):
             return "ok", 200
 
         state["time"] = time_
+
+        day_rules = get_day_rules(business["id"], state["date"])
+        if day_rules.get("closed"):
+            send_message(phone, tr(lang, "closed_day"), business)
+            return "ok", 200
+
+        if not is_time_within_business_hours(time_, day_rules["open_time"], day_rules["close_time"]):
+            send_message(phone, tr(lang, "outside_hours"), business)
+            return "ok", 200
 
         if is_slot_taken(business["id"], state["date"], time_):
             send_message(
@@ -1118,64 +1289,39 @@ def logout():
 
 @app.route("/dashboard")
 def dashboard():
-    # business_id comes from query param, or fall back to first business
-    business_id = request.args.get("business_id", type=int)
+    business_id = session.get("business_id") or request.args.get("business_id", type=int)
 
     conn = get_db_connection()
     c = conn.cursor()
 
     if business_id is None:
-        c.execute("SELECT id, name, timezone, gcal_credentials, access_token FROM businesses ORDER BY id LIMIT 1")
-        biz = c.fetchone()
-        if not biz:
+        c.execute("SELECT * FROM businesses ORDER BY id LIMIT 1")
+        business = c.fetchone()
+        if not business:
             conn.close()
             return redirect("/admin/businesses")
     else:
-        c.execute(
-            """
-            SELECT id, name, timezone, gcal_credentials, access_token
-            FROM businesses
-            WHERE id = %s
-            """,
-            (business_id,),
-        )
-        biz = c.fetchone()
-        if not biz:
+        c.execute("SELECT * FROM businesses WHERE id = %s", (business_id,))
+        business = c.fetchone()
+        if not business:
             conn.close()
             return f"No business with ID {business_id}", 404
 
-    business_id = biz["id"]
-    business_name = biz["name"]
-    timezone = biz.get("timezone") or "Asia/Beirut"
-    google_calendar_connected = bool(biz.get("gcal_credentials"))
-    whatsapp_connected = bool(biz.get("access_token"))
-
-    # Important: keep business_id in session so /confirm and /cancel routes work
+    business_id = business["id"]
     session["business_id"] = business_id
+
+    ensure_default_hours(business_id)
 
     c.execute(
         """
-        SELECT id, customer_name, service, date, time, status
+        SELECT id, customer_name, customer_phone, service, date, time, status
         FROM reservations
         WHERE business_id = %s
         ORDER BY date, time
         """,
         (business_id,),
     )
-    reservation_rows = c.fetchall()
-
-    # Convert dict rows to tuples so they match the dashboard.html I sent you
-    reservations = [
-        (
-            r["id"],
-            r["customer_name"],
-            r["service"],
-            r["date"],
-            r["time"],
-            r["status"],
-        )
-        for r in reservation_rows
-    ]
+    reservations = c.fetchall()
 
     c.execute(
         """
@@ -1188,17 +1334,43 @@ def dashboard():
     )
     services = c.fetchall()
 
+    c.execute(
+        """
+        SELECT id, weekday, is_closed,
+               TO_CHAR(open_time, 'HH24:MI') AS open_time,
+               TO_CHAR(close_time, 'HH24:MI') AS close_time
+        FROM business_hours
+        WHERE business_id = %s
+        ORDER BY weekday
+        """,
+        (business_id,),
+    )
+    hours = c.fetchall()
+
+    c.execute(
+        """
+        SELECT id, blocked_date::text AS blocked_date, COALESCE(note, '') AS note
+        FROM blocked_dates
+        WHERE business_id = %s
+        ORDER BY blocked_date
+        """,
+        (business_id,),
+    )
+    blocked_dates = c.fetchall()
+
     conn.close()
 
     return render_template(
         "dashboard.html",
+        business=business,
         reservations=reservations,
         services=services,
-        business_name=business_name,
-        business_id=business_id,
-        timezone=timezone,
-        google_calendar_connected=google_calendar_connected,
-        whatsapp_connected=whatsapp_connected,
+        hours=hours,
+        blocked_dates=blocked_dates,
+        weekday_names=WEEKDAY_NAMES,
+        active_tab=request.args.get("tab", "reservations"),
+        google_calendar_connected=bool(business.get("gcal_credentials")),
+        whatsapp_connected=bool(business.get("access_token")),
     )
 
 
@@ -1419,6 +1591,169 @@ def temp_view_reservations():
     except Exception as e:
         print("temp_view_reservations error:", str(e))
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/settings/update", methods=["POST"])
+def update_business_settings():
+    if "business_id" not in session:
+        return redirect("/login")
+
+    business_id = session["business_id"]
+    business_name = request.form.get("business_name", "").strip()
+    timezone = request.form.get("timezone", "Asia/Beirut").strip() or "Asia/Beirut"
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        UPDATE businesses
+        SET name = %s, timezone = %s
+        WHERE id = %s
+        """,
+        (business_name, timezone, business_id),
+    )
+    conn.commit()
+    conn.close()
+
+    return redirect("/dashboard?tab=settings")
+
+
+@app.route("/services/add", methods=["POST"])
+def add_service():
+    if "business_id" not in session:
+        return redirect("/login")
+
+    business_id = session["business_id"]
+    name = request.form.get("name", "").strip()
+    price = float(request.form.get("price") or 0)
+    duration_min = int(request.form.get("duration_min") or 45)
+
+    if name:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            """
+            INSERT INTO services (name, price, duration_min, business_id)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (name, price, duration_min, business_id),
+        )
+        conn.commit()
+        conn.close()
+
+    return redirect("/dashboard?tab=services")
+
+
+@app.route("/services/delete/<int:service_id>", methods=["POST"])
+def delete_service(service_id):
+    if "business_id" not in session:
+        return redirect("/login")
+
+    business_id = session["business_id"]
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        DELETE FROM services
+        WHERE id = %s AND business_id = %s
+        """,
+        (service_id, business_id),
+    )
+    conn.commit()
+    conn.close()
+
+    return redirect("/dashboard?tab=services")
+
+
+@app.route("/availability/update-hours", methods=["POST"])
+def update_hours():
+    if "business_id" not in session:
+        return redirect("/login")
+
+    business_id = session["business_id"]
+
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    for weekday in range(7):
+        is_closed = request.form.get(f"closed_{weekday}") == "on"
+        open_time = request.form.get(f"open_{weekday}") or None
+        close_time = request.form.get(f"close_{weekday}") or None
+
+        if is_closed:
+            open_time = None
+            close_time = None
+
+        c.execute(
+            """
+            INSERT INTO business_hours (business_id, weekday, is_closed, open_time, close_time)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (business_id, weekday)
+            DO UPDATE SET
+                is_closed = EXCLUDED.is_closed,
+                open_time = EXCLUDED.open_time,
+                close_time = EXCLUDED.close_time
+            """,
+            (business_id, weekday, is_closed, open_time, close_time),
+        )
+
+    conn.commit()
+    conn.close()
+
+    return redirect("/dashboard?tab=settings")
+
+
+@app.route("/availability/add-blocked-date", methods=["POST"])
+def add_blocked_date():
+    if "business_id" not in session:
+        return redirect("/login")
+
+    business_id = session["business_id"]
+    blocked_date_raw = request.form.get("blocked_date", "").strip()
+    note = request.form.get("note", "").strip()
+
+    if blocked_date_raw:
+        blocked_date = normalize_booking_date(blocked_date_raw)
+
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            """
+            INSERT INTO blocked_dates (business_id, blocked_date, note)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (business_id, blocked_date)
+            DO UPDATE SET note = EXCLUDED.note
+            """,
+            (business_id, blocked_date, note),
+        )
+        conn.commit()
+        conn.close()
+
+    return redirect("/dashboard?tab=settings")
+
+
+@app.route("/availability/delete-blocked-date/<int:block_id>", methods=["POST"])
+def delete_blocked_date(block_id):
+    if "business_id" not in session:
+        return redirect("/login")
+
+    business_id = session["business_id"]
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        DELETE FROM blocked_dates
+        WHERE id = %s AND business_id = %s
+        """,
+        (block_id, business_id),
+    )
+    conn.commit()
+    conn.close()
+
+    return redirect("/dashboard?tab=settings")
+
 
 # ------------------ RUN ------------------
 

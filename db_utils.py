@@ -75,6 +75,33 @@ def init_db():
         ALTER TABLE reservations
         ADD COLUMN IF NOT EXISTS google_event_id VARCHAR(255);
     """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS business_hours (
+            id SERIAL PRIMARY KEY,
+            business_id INTEGER REFERENCES businesses(id) ON DELETE CASCADE,
+            weekday INTEGER NOT NULL CHECK (weekday BETWEEN 0 AND 6),
+            is_closed BOOLEAN DEFAULT FALSE,
+            open_time TIME,
+            close_time TIME,
+            UNIQUE (business_id, weekday)
+        );
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS blocked_dates (
+            id SERIAL PRIMARY KEY,
+            business_id INTEGER REFERENCES businesses(id) ON DELETE CASCADE,
+            blocked_date DATE NOT NULL,
+            note VARCHAR(255),
+            UNIQUE (business_id, blocked_date)
+        );
+    """)
+
+    c.execute("""
+        ALTER TABLE reservations
+        ADD COLUMN IF NOT EXISTS google_event_id VARCHAR(255);
+    """)
+
     conn.commit()
     conn.close()
     print("PostgreSQL schema initialized successfully.")

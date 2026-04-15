@@ -10,118 +10,109 @@
         .tab-content.active { display: block; }
     </style>
 </head>
-<body class="bg-slate-50 text-slate-800 min-h-screen">
+<body class="bg-slate-50 min-h-screen text-slate-800">
     <div class="min-h-screen flex">
         <aside class="w-72 bg-slate-900 text-white hidden md:flex md:flex-col">
-            <div class="h-16 flex items-center px-6 border-b border-slate-800">
-                <div class="w-9 h-9 rounded-xl bg-indigo-600 flex items-center justify-center font-bold mr-3">
-                    E
-                </div>
+            <div class="h-16 px-6 flex items-center border-b border-slate-800">
+                <div class="w-10 h-10 rounded-2xl bg-indigo-600 flex items-center justify-center font-bold mr-3">E</div>
                 <div>
                     <p class="font-semibold text-lg">EzReserve</p>
-                    <p class="text-xs text-slate-400">Business Dashboard</p>
+                    <p class="text-xs text-slate-400">{{ business.name }}</p>
                 </div>
             </div>
 
-            <nav class="flex-1 px-4 py-6 space-y-2">
-                <button onclick="switchTab('reservations')" id="nav-reservations"
-                    class="nav-btn w-full text-left px-4 py-3 rounded-xl bg-indigo-600 text-white font-medium">
+            <nav class="flex-1 p-4 space-y-2">
+                <button onclick="switchTab('reservations')" id="nav-reservations" class="nav-btn w-full text-left px-4 py-3 rounded-xl font-medium bg-indigo-600 text-white">
                     Reservations
                 </button>
-
-                <button onclick="switchTab('services')" id="nav-services"
-                    class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
+                <button onclick="switchTab('services')" id="nav-services" class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
                     Services
                 </button>
-
-                <button onclick="switchTab('settings')" id="nav-settings"
-                    class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
+                <button onclick="switchTab('settings')" id="nav-settings" class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
                     Settings
                 </button>
             </nav>
 
             <div class="p-4 border-t border-slate-800">
-                <a href="/logout"
-                   class="block w-full text-center bg-slate-800 hover:bg-slate-700 text-white py-3 rounded-xl font-medium">
+                <a href="/logout" class="block w-full text-center py-3 rounded-xl bg-slate-800 hover:bg-slate-700 font-medium">
                     Logout
                 </a>
             </div>
         </aside>
 
-        <main class="flex-1 min-w-0">
+        <main class="flex-1">
             <header class="bg-white border-b border-slate-200 px-6 md:px-8 py-5 flex items-center justify-between">
                 <div>
                     <h1 id="page-title" class="text-2xl font-bold">Reservations</h1>
-                    <p class="text-slate-500 text-sm mt-1">
-                        {{ business_name|default("Your Business") }}
-                    </p>
+                    <p class="text-sm text-slate-500 mt-1">{{ business.name }}</p>
                 </div>
-
                 <div class="md:hidden">
-                    <a href="/logout"
-                       class="inline-flex items-center px-4 py-2 rounded-lg bg-slate-900 text-white text-sm font-medium">
-                        Logout
-                    </a>
+                    <a href="/logout" class="inline-flex px-4 py-2 rounded-lg bg-slate-900 text-white text-sm font-medium">Logout</a>
                 </div>
             </header>
 
-            <div class="p-6 md:p-8">
+            <div class="p-6 md:p-8 space-y-8">
+
                 <div id="tab-reservations" class="tab-content active">
-                    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
-                        <div>
-                            <h2 class="text-lg font-semibold">Reservations</h2>
-                            <p class="text-slate-500 text-sm">Manage bookings, confirmations, and cancellations.</p>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                        <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+                            <p class="text-sm text-slate-500">Total Reservations</p>
+                            <p class="text-3xl font-bold mt-2">{{ reservations|length }}</p>
+                        </div>
+                        <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+                            <p class="text-sm text-slate-500">Confirmed</p>
+                            <p class="text-3xl font-bold mt-2">
+                                {{ reservations | selectattr("status", "equalto", "CONFIRMED") | list | length }}
+                            </p>
+                        </div>
+                        <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+                            <p class="text-sm text-slate-500">Canceled</p>
+                            <p class="text-3xl font-bold mt-2">
+                                {{ reservations | selectattr("status", "equalto", "CANCELED") | list | length }}
+                            </p>
                         </div>
                     </div>
 
-                    <div class="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
+                    <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                        <div class="px-5 py-4 border-b border-slate-100">
+                            <h2 class="font-semibold text-lg">Reservations</h2>
+                            <p class="text-sm text-slate-500">All bookings for this business</p>
+                        </div>
+
                         <div class="overflow-x-auto">
                             <table class="min-w-full">
                                 <thead class="bg-slate-50 border-b border-slate-200">
                                     <tr class="text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
                                         <th class="px-5 py-4">Customer</th>
+                                        <th class="px-5 py-4">Phone</th>
                                         <th class="px-5 py-4">Service</th>
                                         <th class="px-5 py-4">Date</th>
                                         <th class="px-5 py-4">Time</th>
                                         <th class="px-5 py-4">Status</th>
-                                        <th class="px-5 py-4 text-right">Actions</th>
+                                        <th class="px-5 py-4 text-right">Action</th>
                                     </tr>
                                 </thead>
                                 <tbody class="divide-y divide-slate-100">
                                     {% for r in reservations %}
-                                    <tr class="hover:bg-slate-50 transition">
+                                    <tr class="hover:bg-slate-50">
+                                        <td class="px-5 py-4 font-medium">{{ r.customer_name }}</td>
+                                        <td class="px-5 py-4 text-slate-600">{{ r.customer_phone }}</td>
+                                        <td class="px-5 py-4">{{ r.service }}</td>
+                                        <td class="px-5 py-4">{{ r.date }}</td>
+                                        <td class="px-5 py-4">{{ r.time }}</td>
                                         <td class="px-5 py-4">
-                                            <div class="font-medium text-slate-900">{{ r[1] }}</div>
-                                        </td>
-                                        <td class="px-5 py-4 text-slate-700">{{ r[2] }}</td>
-                                        <td class="px-5 py-4 text-slate-700">{{ r[3] }}</td>
-                                        <td class="px-5 py-4 text-slate-700">{{ r[4] }}</td>
-                                        <td class="px-5 py-4">
-                                            {% if r[5] == "CONFIRMED" %}
-                                                <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-700">
-                                                    Confirmed
-                                                </span>
-                                            {% elif r[5] == "CANCELED" %}
-                                                <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-red-100 text-red-700">
-                                                    Canceled
-                                                </span>
+                                            {% if r.status == "CONFIRMED" %}
+                                            <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-700">Confirmed</span>
+                                            {% elif r.status == "CANCELED" %}
+                                            <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-red-100 text-red-700">Canceled</span>
                                             {% else %}
-                                                <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-yellow-100 text-yellow-700">
-                                                    Pending
-                                                </span>
+                                            <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-yellow-100 text-yellow-700">{{ r.status }}</span>
                                             {% endif %}
                                         </td>
-                                        <td class="px-5 py-4 text-right whitespace-nowrap">
-                                            {% if r[5] != "CONFIRMED" %}
-                                            <a href="/confirm/{{ r[0] }}?business_id={{ business_id }}">
-                                               class="inline-flex items-center px-3 py-2 rounded-lg bg-indigo-50 text-indigo-700 hover:bg-indigo-100 text-sm font-medium mr-2">
-                                                Confirm
-                                            </a>
-                                            {% endif %}
-
-                                            {% if r[5] != "CANCELED" %}
-                                            <a href="/cancel/{{ r[0] }}?business_id={{ business_id }}">
-                                               class="inline-flex items-center px-3 py-2 rounded-lg bg-red-50 text-red-700 hover:bg-red-100 text-sm font-medium">
+                                        <td class="px-5 py-4 text-right">
+                                            {% if r.status != "CANCELED" %}
+                                            <a href="/cancel/{{ r.id }}?business_id={{ business.id }}"
+                                               class="inline-flex px-3 py-2 rounded-lg bg-red-50 text-red-700 hover:bg-red-100 text-sm font-medium">
                                                 Cancel
                                             </a>
                                             {% endif %}
@@ -129,7 +120,7 @@
                                     </tr>
                                     {% else %}
                                     <tr>
-                                        <td colspan="6" class="px-5 py-12 text-center text-slate-500">
+                                        <td colspan="7" class="px-5 py-12 text-center text-slate-500">
                                             No reservations yet.
                                         </td>
                                     </tr>
@@ -141,101 +132,167 @@
                 </div>
 
                 <div id="tab-services" class="tab-content">
-                    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
-                        <div>
-                            <h2 class="text-lg font-semibold">Services</h2>
-                            <p class="text-slate-500 text-sm">Your available services, pricing, and durations.</p>
+                    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        <div class="lg:col-span-1 bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+                            <h2 class="text-lg font-semibold mb-4">Add Service</h2>
+                            <form method="post" action="/services/add" class="space-y-4">
+                                <div>
+                                    <label class="block text-sm font-medium mb-2">Service Name</label>
+                                    <input name="name" required class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium mb-2">Price</label>
+                                    <input name="price" type="number" step="0.01" required class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium mb-2">Duration (minutes)</label>
+                                    <input name="duration_min" type="number" required class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                </div>
+                                <button class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-xl">
+                                    Save Service
+                                </button>
+                            </form>
                         </div>
-                    </div>
 
-                    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-                        {% for s in services|default([]) %}
-                        <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
-                            <div class="flex items-start justify-between mb-4">
-                                <h3 class="text-lg font-semibold text-slate-900">{{ s["name"] if s is mapping else s[1] }}</h3>
-                            </div>
+                        <div class="lg:col-span-2">
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                {% for s in services %}
+                                <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+                                    <div class="flex items-start justify-between gap-4">
+                                        <div>
+                                            <h3 class="text-lg font-semibold">{{ s.name }}</h3>
+                                            <p class="text-slate-500 text-sm mt-2">{{ s.duration_min }} minutes</p>
+                                        </div>
+                                        <span class="text-xl font-bold">${{ "%.2f"|format(s.price) }}</span>
+                                    </div>
 
-                            <div class="flex items-center justify-between pt-4 border-t border-slate-100">
-                                <span class="text-xl font-bold text-slate-900">
-                                    ${{ "%.2f"|format(s["price"] if s is mapping else s[2]) }}
-                                </span>
-                                <span class="text-sm text-slate-500">
-                                    {{ s["duration_min"] if s is mapping else s[3] }} min
-                                </span>
+                                    <form method="post" action="/services/delete/{{ s.id }}" class="mt-6">
+                                        <button class="text-red-600 hover:text-red-700 text-sm font-medium">
+                                            Delete
+                                        </button>
+                                    </form>
+                                </div>
+                                {% else %}
+                                <div class="col-span-full bg-white rounded-2xl border border-slate-200 p-10 text-center text-slate-500 shadow-sm">
+                                    No services yet.
+                                </div>
+                                {% endfor %}
                             </div>
                         </div>
-                        {% else %}
-                        <div class="col-span-full bg-white rounded-2xl border border-slate-200 p-10 text-center text-slate-500 shadow-sm">
-                            No services loaded yet.
-                        </div>
-                        {% endfor %}
                     </div>
                 </div>
 
                 <div id="tab-settings" class="tab-content">
-                    <div class="max-w-3xl">
-                        <div class="mb-6">
-                            <h2 class="text-lg font-semibold">Settings</h2>
-                            <p class="text-slate-500 text-sm">Basic business information and integration status.</p>
-                        </div>
+                    <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
 
-                        <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm mb-6">
-                            <h3 class="text-base font-semibold mb-4">Business Profile</h3>
-
-                            <div class="space-y-4">
+                        <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+                            <h2 class="text-lg font-semibold mb-4">Business Profile</h2>
+                            <form method="post" action="/settings/update" class="space-y-4">
                                 <div>
-                                    <label class="block text-sm font-medium text-slate-700 mb-2">Business Name</label>
-                                    <input type="text"
-                                           value="{{ business_name|default('My Business') }}"
-                                           class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                    <label class="block text-sm font-medium mb-2">Business Name</label>
+                                    <input name="business_name" value="{{ business.name }}" required class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium mb-2">Timezone</label>
+                                    <input name="timezone" value="{{ business.timezone or 'Asia/Beirut' }}" required class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                </div>
+                                <button class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-5 rounded-xl">
+                                    Save Business Info
+                                </button>
+                            </form>
+
+                            <div class="mt-8 border-t border-slate-100 pt-6 space-y-4">
+                                <div class="flex items-center justify-between">
+                                    <div>
+                                        <p class="font-medium">Google Calendar</p>
+                                        <p class="text-sm text-slate-500">Calendar sync status</p>
+                                    </div>
+                                    {% if google_calendar_connected %}
+                                    <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-700">Connected</span>
+                                    {% else %}
+                                    <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-600">Not connected</span>
+                                    {% endif %}
                                 </div>
 
-                                <div>
-                                    <label class="block text-sm font-medium text-slate-700 mb-2">Timezone</label>
-                                    <input type="text"
-                                           value="{{ timezone|default('Asia/Beirut') }}"
-                                           class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                <div class="flex items-center justify-between">
+                                    <div>
+                                        <p class="font-medium">WhatsApp Cloud API</p>
+                                        <p class="text-sm text-slate-500">Messaging connection</p>
+                                    </div>
+                                    {% if whatsapp_connected %}
+                                    <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-700">Active</span>
+                                    {% else %}
+                                    <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-600">Inactive</span>
+                                    {% endif %}
                                 </div>
                             </div>
                         </div>
 
                         <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
-                            <h3 class="text-base font-semibold mb-4">Integrations</h3>
-
-                            <div class="flex items-center justify-between py-4 border-b border-slate-100">
-                                <div>
-                                    <p class="font-medium text-slate-900">Google Calendar</p>
-                                    <p class="text-sm text-slate-500">Sync reservations automatically</p>
+                            <h2 class="text-lg font-semibold mb-4">Weekly Availability</h2>
+                            <form method="post" action="/availability/update-hours" class="space-y-4">
+                                {% for h in hours %}
+                                <div class="grid grid-cols-12 gap-3 items-center">
+                                    <div class="col-span-4 font-medium">{{ weekday_names[h.weekday] }}</div>
+                                    <div class="col-span-2">
+                                        <label class="inline-flex items-center gap-2 text-sm">
+                                            <input type="checkbox" name="closed_{{ h.weekday }}" {% if h.is_closed %}checked{% endif %}>
+                                            Closed
+                                        </label>
+                                    </div>
+                                    <div class="col-span-3">
+                                        <input type="time" name="open_{{ h.weekday }}" value="{{ h.open_time or '' }}"
+                                               class="w-full rounded-lg border border-slate-300 px-3 py-2">
+                                    </div>
+                                    <div class="col-span-3">
+                                        <input type="time" name="close_{{ h.weekday }}" value="{{ h.close_time or '' }}"
+                                               class="w-full rounded-lg border border-slate-300 px-3 py-2">
+                                    </div>
                                 </div>
-                                {% if google_calendar_connected|default(False) %}
-                                <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-700">
-                                    Connected
-                                </span>
-                                {% else %}
-                                <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-600">
-                                    Not connected
-                                </span>
-                                {% endif %}
-                            </div>
+                                {% endfor %}
+                                <button class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-5 rounded-xl">
+                                    Save Weekly Schedule
+                                </button>
+                            </form>
+                        </div>
 
-                            <div class="flex items-center justify-between py-4">
-                                <div>
-                                    <p class="font-medium text-slate-900">WhatsApp Cloud API</p>
-                                    <p class="text-sm text-slate-500">Booking and cancellation messages</p>
+                        <div class="xl:col-span-2 bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+                            <h2 class="text-lg font-semibold mb-4">Blocked Dates</h2>
+
+                            <form method="post" action="/availability/add-blocked-date" class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                                <input type="date" name="blocked_date" required
+                                       class="rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                <input type="text" name="note" placeholder="Reason (optional)"
+                                       class="rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                <button class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-5 rounded-xl">
+                                    Add Blocked Date
+                                </button>
+                            </form>
+
+                            <div class="space-y-3">
+                                {% for b in blocked_dates %}
+                                <div class="flex items-center justify-between rounded-xl border border-slate-200 px-4 py-3">
+                                    <div>
+                                        <p class="font-medium">{{ b.blocked_date }}</p>
+                                        {% if b.note %}
+                                        <p class="text-sm text-slate-500">{{ b.note }}</p>
+                                        {% endif %}
+                                    </div>
+                                    <form method="post" action="/availability/delete-blocked-date/{{ b.id }}">
+                                        <button class="text-red-600 hover:text-red-700 text-sm font-medium">
+                                            Remove
+                                        </button>
+                                    </form>
                                 </div>
-                                {% if whatsapp_connected|default(True) %}
-                                <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-700">
-                                    Active
-                                </span>
                                 {% else %}
-                                <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-600">
-                                    Inactive
-                                </span>
-                                {% endif %}
+                                <p class="text-slate-500 text-sm">No blocked dates yet.</p>
+                                {% endfor %}
                             </div>
                         </div>
+
                     </div>
                 </div>
+
             </div>
         </main>
     </div>
@@ -251,18 +308,22 @@
             document.getElementById("page-title").innerText = titles[tabId];
 
             document.querySelectorAll(".tab-content").forEach(el => el.classList.remove("active"));
-
             document.querySelectorAll(".nav-btn").forEach(el => {
                 el.classList.remove("bg-indigo-600", "text-white");
                 el.classList.add("text-slate-300");
             });
 
             document.getElementById("tab-" + tabId).classList.add("active");
-
             const activeNav = document.getElementById("nav-" + tabId);
             activeNav.classList.remove("text-slate-300");
             activeNav.classList.add("bg-indigo-600", "text-white");
+
+            const url = new URL(window.location);
+            url.searchParams.set("tab", tabId);
+            window.history.replaceState({}, "", url);
         }
+
+        switchTab("{{ active_tab }}");
     </script>
 </body>
 </html>

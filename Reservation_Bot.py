@@ -447,7 +447,100 @@ def mark_reservations_cancelled_by_phone(business_id, phone):
     return affected
 
 # ------------------ CONVERSATION LOGIC ------------------
+import re
 
+def detect_lang(text):
+    t = (text or "").strip()
+
+    # Arabic letters
+    if re.search(r'[\u0600-\u06FF]', t):
+        return "ar"
+
+    lt = t.lower()
+    french_markers = ["bonjour", "salut", "réserver", "reservation", "annuler", "merci"]
+    if any(w in lt for w in french_markers):
+        return "fr"
+
+    return "en"
+
+
+def is_booking_intent(text):
+    t = (text or "").strip().lower()
+    booking_keywords = [
+        "book", "booking", "reserve", "reservation", "appointment",
+        "احجز", "أحجز", "حجز", "موعد", "احجزلي", "أحجزلي",
+        "بدي احجز", "بدي حجز", "اريد احجز", "أريد أحجز", "عايز احجز"
+    ]
+    return any(k in t for k in booking_keywords)
+
+
+def is_cancel_intent(text):
+    t = (text or "").strip().lower()
+    cancel_keywords = [
+        "cancel", "cancellation",
+        "الغاء", "إلغاء", "الغي", "ألغي",
+        "الغاء الحجز", "إلغاء الحجز", "بدي الغي", "بدي ألغي"
+    ]
+    return any(k in t for k in cancel_keywords)
+
+
+def tr(lang, key, **kwargs):
+    messages = {
+        "greeting": {
+            "en": "Hi! Welcome 👋\n\nHow can I help you today?\n• Type *book* to make a reservation\n• Type *cancel* to cancel your reservation",
+            "ar": "أهلاً 👋\n\nكيف فيني ساعدك اليوم؟\n• اكتب *احجز* لتعمل حجز\n• اكتب *الغاء* لتلغي الحجز",
+            "fr": "Bonjour 👋\n\nComment puis-je vous aider aujourd’hui ?\n• Tapez *book* pour réserver\n• Tapez *cancel* pour annuler votre réservation",
+        },
+        "ask_name": {
+            "en": "Sure — what is your full name?",
+            "ar": "أكيد 🤍 شو الاسم الكامل للحجز؟",
+            "fr": "Bien sûr — quel est votre nom complet ?",
+        },
+        "ask_service": {
+            "en": "Thanks, {name}. Which service would you like? (e.g., haircut, consultation)",
+            "ar": "شكراً {name}. أي خدمة بدك؟ (مثلاً: قص شعر، استشارة)",
+            "fr": "Merci, {name}. Quel service souhaitez-vous ? (ex. coupe, consultation)",
+        },
+        "ask_date": {
+            "en": "Great — {service}. What date would you like? (e.g., 2026-04-20)",
+            "ar": "ممتاز — {service}. أي تاريخ بدك؟ (مثلاً: 2026-04-20)",
+            "fr": "Parfait — {service}. Quelle date souhaitez-vous ? (ex. 2026-04-20)",
+        },
+        "ask_time": {
+            "en": "Perfect — and what time? (e.g., 16:00 or 4 PM)",
+            "ar": "ممتاز — وأي ساعة؟ (مثلاً: 16:00 أو 4 PM)",
+            "fr": "Parfait — à quelle heure ? (ex. 16:00 ou 4 PM)",
+        },
+        "invalid_time": {
+            "en": "Please send a valid time, like 16:00 or 4 PM.",
+            "ar": "من فضلك ابعت وقت صحيح، مثل 16:00 أو 4 PM.",
+            "fr": "Veuillez envoyer une heure valide, comme 16:00 ou 4 PM.",
+        },
+        "slot_taken": {
+            "en": "Sorry, {date} at {time} is already booked. Please choose another time 🤍",
+            "ar": "عذراً، الموعد {date} الساعة {time} محجوز. اختار وقت تاني 🤍",
+            "fr": "Désolé, le créneau du {date} à {time} est déjà réservé. Choisissez une autre heure 🤍",
+        },
+        "no_active_cancel": {
+            "en": "You have no active reservations to cancel.",
+            "ar": "ما عندك أي حجوزات مفعّلة لتلغيها.",
+            "fr": "Vous n’avez aucune réservation active à annuler.",
+        },
+        "cancel_done": {
+            "en": "✅ Cancelled {count} reservation(s).\n🗓 Removed {events} event(s) from Google Calendar.",
+            "ar": "✅ تم إلغاء {count} حجز/حجوزات.\n🗓 وتم حذف {events} موعد/مواعيد من Google Calendar.",
+            "fr": "✅ {count} réservation(s) annulée(s).\n🗓 {events} événement(s) supprimé(s) de Google Calendar.",
+        },
+        "save_error": {
+            "en": "Something went wrong while saving your reservation. Please try again.",
+            "ar": "صار خطأ أثناء حفظ الحجز. جرب مرة ثانية.",
+            "fr": "Une erreur s’est produite أثناء حفظ la réservation. Veuillez réessayer.",
+        },
+    }
+
+    lang_messages = messages.get(key, {})
+    template = lang_messages.get(lang) or lang_messages.get("en") or key
+    return template.format(**kwargs)
 
 def process_incoming_message(business, phone, text):
     global user_state
@@ -457,39 +550,26 @@ def process_incoming_message(business, phone, text):
 
     key = (business["id"], phone)
     state = user_state.get(key)
+
+    lang = state.get("lang") if state and state.get("lang") else detect_lang(t)
+
     # GREETING
-    if lt in ["hi", "hello", "hey", "hii", "heyy", "hola", "مرحبا", "اهلا", "أهلا", "سلام"]:
-        send_message(
-            phone,
-            "Hi! Welcome 👋\n\n"
-            "How can I help you today?\n"
-            "• Type *book* to make a reservation\n"
-            "• Type *cancel* to cancel your reservation",
-            business,
-        )
+    if lt in ["hi", "hello", "hey", "hii", "heyy", "hola", "مرحبا", "اهلا", "أهلا", "سلام", "bonjour", "salut"]:
+        send_message(phone, tr(lang, "greeting"), business)
         return "ok", 200
 
     # START BOOKING
-    if (
-        "book" in lt
-        or "appointment" in lt
-        or "reserve" in lt
-        or lt.startswith("book")
-    ):
-        user_state[key] = {"step": "awaiting_name"}
-        send_message(phone, "Sure — what is your full name?", business)
+    if is_booking_intent(lt):
+        user_state[key] = {"step": "awaiting_name", "lang": lang}
+        send_message(phone, tr(lang, "ask_name"), business)
         return "ok", 200
 
     # CANCEL BOOKING
-    if "cancel" in lt:
+    if is_cancel_intent(lt):
         reservations = get_confirmed_reservations_for_phone(business["id"], phone)
 
         if not reservations:
-            send_message(
-                phone,
-                "You have no active reservations to cancel.",
-                business,
-            )
+            send_message(phone, tr(lang, "no_active_cancel"), business)
             return "ok", 200
 
         deleted_count = 0
@@ -503,28 +583,43 @@ def process_incoming_message(business, phone, text):
 
         send_message(
             phone,
-            f"✅ Cancelled {cancelled_count} reservation(s).\n"
-            f"🗓 Removed {deleted_count} event(s) from Google Calendar.",
+            tr(lang, "cancel_done", count=cancelled_count, events=deleted_count),
             business,
         )
         return "ok", 200
 
     # STEP 1 – NAME
     if state and state.get("step") == "awaiting_name":
+        lang = state.get("lang", lang)
+
+        # Protect against user repeating "book" / "احجز"
+        if is_booking_intent(t) or is_cancel_intent(t):
+            send_message(phone, tr(lang, "ask_name"), business)
+            return "ok", 200
+
         state["name"] = t
         state["step"] = "awaiting_service"
         send_message(
             phone,
-            f"Thanks, {t}. Which service would you like? (e.g., haircut, consultation)",
+            tr(lang, "ask_service", name=t),
             business,
         )
         return "ok", 200
 
     # STEP 2 – SERVICE (keywords + AI fallback)
     if state and state.get("step") == "awaiting_service":
+        lang = state.get("lang", lang)
         lt2 = t.lower()
 
-        # Detect all matching canonical services
+        # If user repeats booking words here, ask for service again
+        if is_booking_intent(t):
+            send_message(
+                phone,
+                tr(lang, "ask_service", name=state.get("name", "")),
+                business,
+            )
+            return "ok", 200
+
         matched = set()
         for kw, canonical in SERVICE_KEYWORDS.items():
             if kw.lower() in lt2:
@@ -533,20 +628,16 @@ def process_incoming_message(business, phone, text):
         ai_service = None
         normalized = None
 
-        # Special case: user asked for both haircut & beard
         if "Haircut" in matched and "Beard Trim" in matched:
             normalized = "Haircut and Beard"
         elif matched:
-            # If we matched at least one, just take one of them
             normalized = next(iter(matched))
         else:
-            # No keyword match, try AI
             if OPENROUTER_API_KEY:
                 ai_service = ai_pick_service(business, t)
                 if ai_service:
                     normalized = ai_service
 
-        # Fallback: use raw text if nothing worked
         if normalized is None:
             normalized = t
 
@@ -556,31 +647,26 @@ def process_incoming_message(business, phone, text):
         state["step"] = "awaiting_date"
         send_message(
             phone,
-            f"Great — {normalized}. What date would you like? (e.g., 20 Nov or 2025-11-20)",
+            tr(lang, "ask_date", service=normalized),
             business,
         )
         return "ok", 200
 
-
     # STEP 3 – DATE
     if state and state.get("step") == "awaiting_date":
+        lang = state.get("lang", lang)
         state["date"] = t
         state["step"] = "awaiting_time"
-        send_message(
-            phone, "Perfect — and what time? (e.g., 16:00 or 4 PM)", business
-        )
+        send_message(phone, tr(lang, "ask_time"), business)
         return "ok", 200
 
     # STEP 4 – TIME
     if state and state.get("step") == "awaiting_time":
+        lang = state.get("lang", lang)
         time_ = normalize_time_str(t)
 
         if not time_:
-            send_message(
-                phone,
-                "Please send a valid time, like 16:00 or 4 PM.",
-                business,
-            )
+            send_message(phone, tr(lang, "invalid_time"), business)
             return "ok", 200
 
         state["time"] = time_
@@ -588,7 +674,7 @@ def process_incoming_message(business, phone, text):
         if is_slot_taken(business["id"], state["date"], time_):
             send_message(
                 phone,
-                f"Sorry, {state['date']} at {time_} is already booked. Please choose another time 🤍",
+                tr(lang, "slot_taken", date=state["date"], time=time_),
                 business,
             )
             return "ok", 200
@@ -633,11 +719,7 @@ def process_incoming_message(business, phone, text):
 
         except Exception as e:
             print("STEP 4 save error:", str(e))
-            send_message(
-                phone,
-                "Something went wrong while saving your reservation. Please try again.",
-                business,
-            )
+            send_message(phone, tr(lang, "save_error"), business)
             return "ok", 200
 
 

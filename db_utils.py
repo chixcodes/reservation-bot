@@ -70,6 +70,11 @@ def init_db():
         ON reservations (business_id, date, time)
         WHERE status = 'CONFIRMED';
     """)
+
+    c.execute("""
+        ALTER TABLE reservations
+        ADD COLUMN IF NOT EXISTS google_event_id VARCHAR(255);
+    """)
     conn.commit()
     conn.close()
     print("PostgreSQL schema initialized successfully.")

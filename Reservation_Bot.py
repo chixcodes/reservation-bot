@@ -6,7 +6,8 @@ from db_utils import get_db_connection, init_db
 import requests
 import json
 from datetime import datetime, timedelta
-
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
 from dotenv import load_dotenv
 from flask import (
     Flask,
@@ -307,7 +308,8 @@ def save_reservation(business_id, phone, name, service, date, time_):
             """,
             (business_id, name, phone, service, date, time_),
         )
-        new_id = c.fetchone()["id"]
+        row = c.fetchone()
+        new_id = row["id"] if isinstance(row, dict) else row[0]
         conn.commit()
         print(f"SAVED (CONFIRMED) -> id={new_id}, {name}, {service} on {date} at {time_}")
         return new_id
@@ -364,6 +366,93 @@ def send_reservation_cancellation(phone, name, service, date, time, business):
         f"If this is a mistake, please contact us to reschedule."
     )
     send_message(phone, message, business)
+
+def get_business_calendar_credentials(business):
+    raw = business.get("gcal_credentials")
+    if not raw:
+        return None
+
+    try:
+        info = json.loads(raw) if isinstance(raw, str) else raw
+        creds = Credentials.from_authorized_user_info(
+            info,
+            scopes=["https://www.googleapis.com/auth/calendar"],
+        )
+        return creds
+    except Exception as e:
+        print("get_business_calendar_credentials error:", e)
+        return None
+
+
+def create_google_calendar_event(business, reservation_id, customer_name, service, date_str, time_str):
+    creds = get_business_calendar_credentials(business)
+    if not creds:
+        print("No Google Calendar credentials for business", business["id"])
+        return None
+
+    calendar_id = business.get("calendar_id") or "primary"
+    timezone = business.get("timezone") or "Asia/Beirut"
+
+    service_info = get_service_info(business["id"], service)
+    duration_min = int(service_info.get("duration", 45))
+
+    start_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+    end_dt = start_dt + timedelta(minutes=duration_min)
+
+    event = {
+        "summary": f"{service} - {customer_name}",
+        "description": f"Reservation #{reservation_id}\nCustomer: {customer_name}\nService: {service}",
+        "start": {
+            "dateTime": start_dt.isoformat(),
+            "timeZone": timezone,
+        },
+        "end": {
+            "dateTime": end_dt.isoformat(),
+            "timeZone": timezone,
+        },
+    }
+
+    try:
+        service_obj = build("calendar", "v3", credentials=creds)
+        created = service_obj.events().insert(calendarId=calendar_id, body=event).execute()
+        return created.get("id")
+    except Exception as e:
+        print("create_google_calendar_event error:", e)
+        return None
+
+
+def save_google_event_id(reservation_id, google_event_id):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        UPDATE reservations
+        SET google_event_id = %s
+        WHERE id = %s
+        """,
+        (google_event_id, reservation_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def cancel_google_calendar_event(business, google_event_id):
+    if not google_event_id:
+        return
+
+    creds = get_business_calendar_credentials(business)
+    if not creds:
+        print("No Google Calendar credentials for business", business["id"])
+        return
+
+    calendar_id = business.get("calendar_id") or "primary"
+
+    try:
+        service_obj = build("calendar", "v3", credentials=creds)
+        service_obj.events().delete(calendarId=calendar_id, eventId=google_event_id).execute()
+        print("Deleted Google Calendar event:", google_event_id)
+    except Exception as e:
+        print("cancel_google_calendar_event error:", e)
 
 
 # ------------------ CONVERSATION LOGIC ------------------
@@ -492,7 +581,6 @@ def process_incoming_message(business, phone, text):
 
         state["time"] = time_
 
-        # CHECK IF SLOT IS ALREADY TAKEN
         if is_slot_taken(business["id"], state["date"], time_):
             send_message(
                 phone,
@@ -510,7 +598,21 @@ def process_incoming_message(business, phone, text):
                 state.get("date", ""),
                 state.get("time", ""),
             )
-            print("Reservation saved with id:", reservation_id)
+
+            google_event_id = create_google_calendar_event(
+                business,
+                reservation_id,
+                state.get("name", ""),
+                state.get("service", ""),
+                state.get("date", ""),
+                state.get("time", ""),
+            )
+
+            if google_event_id:
+                save_google_event_id(reservation_id, google_event_id)
+                print("Google Calendar event created:", google_event_id)
+            else:
+                print("Google Calendar event was not created")
 
             send_reservation_confirmation(
                 phone,

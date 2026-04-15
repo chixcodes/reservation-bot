@@ -1125,20 +1125,33 @@ def dashboard():
     c = conn.cursor()
 
     if business_id is None:
-        c.execute("SELECT id, name FROM businesses ORDER BY id LIMIT 1")
+        c.execute("SELECT id, name, timezone, gcal_credentials, access_token FROM businesses ORDER BY id LIMIT 1")
         biz = c.fetchone()
         if not biz:
             conn.close()
             return redirect("/admin/businesses")
-        business_id = biz["id"]
-        business_name = biz["name"]
     else:
-        c.execute("SELECT id, name FROM businesses WHERE id=%s", (business_id,))
+        c.execute(
+            """
+            SELECT id, name, timezone, gcal_credentials, access_token
+            FROM businesses
+            WHERE id = %s
+            """,
+            (business_id,),
+        )
         biz = c.fetchone()
         if not biz:
             conn.close()
             return f"No business with ID {business_id}", 404
-        business_name = biz["name"]
+
+    business_id = biz["id"]
+    business_name = biz["name"]
+    timezone = biz.get("timezone") or "Asia/Beirut"
+    google_calendar_connected = bool(biz.get("gcal_credentials"))
+    whatsapp_connected = bool(biz.get("access_token"))
+
+    # Important: keep business_id in session so /confirm and /cancel routes work
+    session["business_id"] = business_id
 
     c.execute(
         """
@@ -1149,52 +1162,43 @@ def dashboard():
         """,
         (business_id,),
     )
-    reservations = c.fetchall()
+    reservation_rows = c.fetchall()
+
+    # Convert dict rows to tuples so they match the dashboard.html I sent you
+    reservations = [
+        (
+            r["id"],
+            r["customer_name"],
+            r["service"],
+            r["date"],
+            r["time"],
+            r["status"],
+        )
+        for r in reservation_rows
+    ]
+
+    c.execute(
+        """
+        SELECT id, name, price, duration_min
+        FROM services
+        WHERE business_id = %s
+        ORDER BY id DESC
+        """,
+        (business_id,),
+    )
+    services = c.fetchall()
+
     conn.close()
 
-    html = """
-    <h1>Dashboard — {{ business_name }}</h1>
-
-    {% if reservations %}
-    <table border="1" cellpadding="6">
-      <tr>
-        <th>ID</th>
-        <th>Name</th>
-        <th>Service</th>
-        <th>Date</th>
-        <th>Time</th>
-        <th>Status</th>
-        <th>Actions</th>
-      </tr>
-      {% for r in reservations %}
-      <tr>
-        <td>{{ r.id }}</td>
-        <td>{{ r.customer_name }}</td>
-        <td>{{ r.service }}</td>
-        <td>{{ r.date }}</td>
-        <td>{{ r.time }}</td>
-        <td>{{ r.status }}</td>
-        <td>
-          <a href="/confirm/{{ r.id }}?business_id={{ business_id }}">Confirm</a> |
-          <a href="/cancel/{{ r.id }}?business_id={{ business_id }}">Cancel</a>
-        </td>
-      </tr>
-      {% endfor %}
-    </table>
-    {% else %}
-    <p>No reservations yet.</p>
-    {% endif %}
-
-    <p style="margin-top:20px;">
-      <a href="/admin/{{ business_id }}/services">Manage services</a> |
-      <a href="/admin/businesses">Back to businesses</a>
-    </p>
-    """
-    return render_template_string(
-        html,
+    return render_template(
+        "dashboard.html",
         reservations=reservations,
+        services=services,
         business_name=business_name,
         business_id=business_id,
+        timezone=timezone,
+        google_calendar_connected=google_calendar_connected,
+        whatsapp_connected=whatsapp_connected,
     )
 
 

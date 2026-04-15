@@ -2,44 +2,267 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Dashboard - Reservations</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EzReserve | Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        table { width: 100%; border-collapse: collapse; }
-        th, td { padding: 8px; border: 1px solid #ccc; text-align: left; }
-        .status-pending { background-color: #fff8b3; }
-        .status-confirmed { background-color: #c6f7c3; }
-        .status-canceled { background-color: #f8b3b3; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
     </style>
 </head>
-<body>
+<body class="bg-slate-50 text-slate-800 min-h-screen">
+    <div class="min-h-screen flex">
+        <aside class="w-72 bg-slate-900 text-white hidden md:flex md:flex-col">
+            <div class="h-16 flex items-center px-6 border-b border-slate-800">
+                <div class="w-9 h-9 rounded-xl bg-indigo-600 flex items-center justify-center font-bold mr-3">
+                    E
+                </div>
+                <div>
+                    <p class="font-semibold text-lg">EzReserve</p>
+                    <p class="text-xs text-slate-400">Business Dashboard</p>
+                </div>
+            </div>
 
-<h2>Reservations Dashboard</h2>
-<a href="/logout">Logout</a>
+            <nav class="flex-1 px-4 py-6 space-y-2">
+                <button onclick="switchTab('reservations')" id="nav-reservations"
+                    class="nav-btn w-full text-left px-4 py-3 rounded-xl bg-indigo-600 text-white font-medium">
+                    Reservations
+                </button>
 
-<table>
-<tr>
-    <th>Name</th><th>Service</th><th>Date</th><th>Time</th><th>Status</th><th>Actions</th>
-</tr>
+                <button onclick="switchTab('services')" id="nav-services"
+                    class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
+                    Services
+                </button>
 
-{% for r in reservations %}
-<tr class="
-{% if r[5]=='CONFIRMED' %}status-confirmed
-{% elif r[5]=='CANCELED' %}status-canceled
-{% else %}status-pending
-{% endif %}
-">
-    <td>{{ r[1] }}</td>
-    <td>{{ r[2] }}</td>
-    <td>{{ r[3] }}</td>
-    <td>{{ r[4] }}</td>
-    <td>{{ r[5] }}</td>
-    <td>
-        {% if r[5]!="CONFIRMED" %}<a href="/confirm/{{ r[0] }}">Confirm</a>{% endif %}
-        {% if r[5]!="CANCELED" %}<a href="/cancel/{{ r[0] }}">Cancel</a>{% endif %}
-    </td>
-</tr>
-{% endfor %}
+                <button onclick="switchTab('settings')" id="nav-settings"
+                    class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
+                    Settings
+                </button>
+            </nav>
 
-</table>
+            <div class="p-4 border-t border-slate-800">
+                <a href="/logout"
+                   class="block w-full text-center bg-slate-800 hover:bg-slate-700 text-white py-3 rounded-xl font-medium">
+                    Logout
+                </a>
+            </div>
+        </aside>
+
+        <main class="flex-1 min-w-0">
+            <header class="bg-white border-b border-slate-200 px-6 md:px-8 py-5 flex items-center justify-between">
+                <div>
+                    <h1 id="page-title" class="text-2xl font-bold">Reservations</h1>
+                    <p class="text-slate-500 text-sm mt-1">
+                        {{ business_name|default("Your Business") }}
+                    </p>
+                </div>
+
+                <div class="md:hidden">
+                    <a href="/logout"
+                       class="inline-flex items-center px-4 py-2 rounded-lg bg-slate-900 text-white text-sm font-medium">
+                        Logout
+                    </a>
+                </div>
+            </header>
+
+            <div class="p-6 md:p-8">
+                <div id="tab-reservations" class="tab-content active">
+                    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+                        <div>
+                            <h2 class="text-lg font-semibold">Reservations</h2>
+                            <p class="text-slate-500 text-sm">Manage bookings, confirmations, and cancellations.</p>
+                        </div>
+                    </div>
+
+                    <div class="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
+                        <div class="overflow-x-auto">
+                            <table class="min-w-full">
+                                <thead class="bg-slate-50 border-b border-slate-200">
+                                    <tr class="text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                                        <th class="px-5 py-4">Customer</th>
+                                        <th class="px-5 py-4">Service</th>
+                                        <th class="px-5 py-4">Date</th>
+                                        <th class="px-5 py-4">Time</th>
+                                        <th class="px-5 py-4">Status</th>
+                                        <th class="px-5 py-4 text-right">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-slate-100">
+                                    {% for r in reservations %}
+                                    <tr class="hover:bg-slate-50 transition">
+                                        <td class="px-5 py-4">
+                                            <div class="font-medium text-slate-900">{{ r[1] }}</div>
+                                        </td>
+                                        <td class="px-5 py-4 text-slate-700">{{ r[2] }}</td>
+                                        <td class="px-5 py-4 text-slate-700">{{ r[3] }}</td>
+                                        <td class="px-5 py-4 text-slate-700">{{ r[4] }}</td>
+                                        <td class="px-5 py-4">
+                                            {% if r[5] == "CONFIRMED" %}
+                                                <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-700">
+                                                    Confirmed
+                                                </span>
+                                            {% elif r[5] == "CANCELED" %}
+                                                <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-red-100 text-red-700">
+                                                    Canceled
+                                                </span>
+                                            {% else %}
+                                                <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-yellow-100 text-yellow-700">
+                                                    Pending
+                                                </span>
+                                            {% endif %}
+                                        </td>
+                                        <td class="px-5 py-4 text-right whitespace-nowrap">
+                                            {% if r[5] != "CONFIRMED" %}
+                                            <a href="/confirm/{{ r[0] }}?business_id={{ business_id }}">
+                                               class="inline-flex items-center px-3 py-2 rounded-lg bg-indigo-50 text-indigo-700 hover:bg-indigo-100 text-sm font-medium mr-2">
+                                                Confirm
+                                            </a>
+                                            {% endif %}
+
+                                            {% if r[5] != "CANCELED" %}
+                                            <a href="/cancel/{{ r[0] }}?business_id={{ business_id }}">
+                                               class="inline-flex items-center px-3 py-2 rounded-lg bg-red-50 text-red-700 hover:bg-red-100 text-sm font-medium">
+                                                Cancel
+                                            </a>
+                                            {% endif %}
+                                        </td>
+                                    </tr>
+                                    {% else %}
+                                    <tr>
+                                        <td colspan="6" class="px-5 py-12 text-center text-slate-500">
+                                            No reservations yet.
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="tab-services" class="tab-content">
+                    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+                        <div>
+                            <h2 class="text-lg font-semibold">Services</h2>
+                            <p class="text-slate-500 text-sm">Your available services, pricing, and durations.</p>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+                        {% for s in services|default([]) %}
+                        <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+                            <div class="flex items-start justify-between mb-4">
+                                <h3 class="text-lg font-semibold text-slate-900">{{ s["name"] if s is mapping else s[1] }}</h3>
+                            </div>
+
+                            <div class="flex items-center justify-between pt-4 border-t border-slate-100">
+                                <span class="text-xl font-bold text-slate-900">
+                                    ${{ "%.2f"|format(s["price"] if s is mapping else s[2]) }}
+                                </span>
+                                <span class="text-sm text-slate-500">
+                                    {{ s["duration_min"] if s is mapping else s[3] }} min
+                                </span>
+                            </div>
+                        </div>
+                        {% else %}
+                        <div class="col-span-full bg-white rounded-2xl border border-slate-200 p-10 text-center text-slate-500 shadow-sm">
+                            No services loaded yet.
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+
+                <div id="tab-settings" class="tab-content">
+                    <div class="max-w-3xl">
+                        <div class="mb-6">
+                            <h2 class="text-lg font-semibold">Settings</h2>
+                            <p class="text-slate-500 text-sm">Basic business information and integration status.</p>
+                        </div>
+
+                        <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm mb-6">
+                            <h3 class="text-base font-semibold mb-4">Business Profile</h3>
+
+                            <div class="space-y-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-slate-700 mb-2">Business Name</label>
+                                    <input type="text"
+                                           value="{{ business_name|default('My Business') }}"
+                                           class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                </div>
+
+                                <div>
+                                    <label class="block text-sm font-medium text-slate-700 mb-2">Timezone</label>
+                                    <input type="text"
+                                           value="{{ timezone|default('Asia/Beirut') }}"
+                                           class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+                            <h3 class="text-base font-semibold mb-4">Integrations</h3>
+
+                            <div class="flex items-center justify-between py-4 border-b border-slate-100">
+                                <div>
+                                    <p class="font-medium text-slate-900">Google Calendar</p>
+                                    <p class="text-sm text-slate-500">Sync reservations automatically</p>
+                                </div>
+                                {% if google_calendar_connected|default(False) %}
+                                <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-700">
+                                    Connected
+                                </span>
+                                {% else %}
+                                <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-600">
+                                    Not connected
+                                </span>
+                                {% endif %}
+                            </div>
+
+                            <div class="flex items-center justify-between py-4">
+                                <div>
+                                    <p class="font-medium text-slate-900">WhatsApp Cloud API</p>
+                                    <p class="text-sm text-slate-500">Booking and cancellation messages</p>
+                                </div>
+                                {% if whatsapp_connected|default(True) %}
+                                <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-700">
+                                    Active
+                                </span>
+                                {% else %}
+                                <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-600">
+                                    Inactive
+                                </span>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        function switchTab(tabId) {
+            const titles = {
+                reservations: "Reservations",
+                services: "Services",
+                settings: "Settings"
+            };
+
+            document.getElementById("page-title").innerText = titles[tabId];
+
+            document.querySelectorAll(".tab-content").forEach(el => el.classList.remove("active"));
+
+            document.querySelectorAll(".nav-btn").forEach(el => {
+                el.classList.remove("bg-indigo-600", "text-white");
+                el.classList.add("text-slate-300");
+            });
+
+            document.getElementById("tab-" + tabId).classList.add("active");
+
+            const activeNav = document.getElementById("nav-" + tabId);
+            activeNav.classList.remove("text-slate-300");
+            activeNav.classList.add("bg-indigo-600", "text-white");
+        }
+    </script>
 </body>
 </html>

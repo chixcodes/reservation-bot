@@ -73,8 +73,8 @@ app.secret_key = "CHANGE_THIS_SECRET_KEY"  # change in production
 
 load_dotenv()
 
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o")
+OPENROUTER_API_KEY = (os.getenv("OPENROUTER_API_KEY") or "").strip()
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "khoury123")
 
 
@@ -728,6 +728,7 @@ def is_time_within_business_hours(time_str, open_time, close_time):
     start = datetime.strptime(open_time, "%H:%M").time()
     end = datetime.strptime(close_time, "%H:%M").time()
     return start <= chosen <= end
+
 def humanize_reply(lang, fallback_text, purpose="general"):
     if not OPENROUTER_API_KEY:
         return fallback_text
@@ -754,6 +755,8 @@ def humanize_reply(lang, fallback_text, purpose="general"):
             headers={
                 "Authorization": f"Bearer {OPENROUTER_API_KEY}",
                 "Content-Type": "application/json",
+                "HTTP-Referer": "https://api.ezrezerve.com",
+                "X-Title": "EzReserve",
             },
             json={
                 "model": OPENROUTER_MODEL,
@@ -782,6 +785,66 @@ def humanize_reply(lang, fallback_text, purpose="general"):
 def send_friendly_message(phone, business, lang, text, purpose="general"):
     final_text = humanize_reply(lang, text, purpose=purpose)
     send_message(phone, final_text, business)
+
+import re
+
+def normalize_time_str_with_hours(time_input, open_time=None, close_time=None):
+    raw = (time_input or "").strip().lower()
+
+    # Arabic digits to English
+    arabic_digits_map = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+    raw = raw.translate(arabic_digits_map)
+
+    # explicit am/pm
+    m = re.match(r"^\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*$", raw)
+    if m:
+        hour = int(m.group(1))
+        minute = int(m.group(2) or 0)
+        suffix = m.group(3)
+
+        if suffix == "pm" and hour != 12:
+            hour += 12
+        if suffix == "am" and hour == 12:
+            hour = 0
+
+        return f"{hour:02d}:{minute:02d}"
+
+    # plain numeric time like 4:30 or 16:30
+    m = re.match(r"^\s*(\d{1,2})(?::(\d{2}))?\s*$", raw)
+    if not m:
+        return normalize_time_str(time_input)
+
+    hour = int(m.group(1))
+    minute = int(m.group(2) or 0)
+
+    # already 24-hour style
+    if hour > 12:
+        return f"{hour:02d}:{minute:02d}"
+
+    # ambiguous time: try both AM and PM versions
+    candidates = []
+
+    # AM version
+    am_hour = 0 if hour == 12 else hour
+    candidates.append(f"{am_hour:02d}:{minute:02d}")
+
+    # PM version
+    if hour == 12:
+        pm_hour = 12
+    else:
+        pm_hour = hour + 12
+    candidates.append(f"{pm_hour:02d}:{minute:02d}")
+
+    # if business hours are known, prefer the one inside them
+    if open_time and close_time:
+        valid = [c for c in candidates if is_time_within_business_hours(c, open_time, close_time)]
+        if len(valid) == 1:
+            return valid[0]
+        if len(valid) > 1:
+            return valid[0]
+
+    # fallback: prefer PM for daytime business use
+    return candidates[1]
 
 def process_incoming_message(business, phone, text):
     global user_state
@@ -939,7 +1002,16 @@ def process_incoming_message(business, phone, text):
             send_message(phone, tr(lang, "ask_time"), business)
             return "ok", 200
 
-        time_ = normalize_time_str(t)
+        day_rules = get_day_rules(business["id"], state["date"])
+        if day_rules.get("closed"):
+            send_message(phone, tr(lang, "closed_day"), business)
+            return "ok", 200
+
+        time_ = normalize_time_str_with_hours(
+            t,
+            day_rules.get("open_time"),
+            day_rules.get("close_time"),
+        )
 
         if not time_:
             send_message(phone, tr(lang, "invalid_time"), business)

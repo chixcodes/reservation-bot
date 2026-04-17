@@ -322,33 +322,62 @@ def save_reservation(business_id, phone, name, service, date, time_):
     finally:
         conn.close()
 
-def is_slot_taken(business_id, date, time_):
+def time_to_minutes(time_str):
+    h, m = map(int, time_str.split(":"))
+    return h * 60 + m
+
+
+def ranges_overlap(start1, duration1, start2, duration2):
+    end1 = start1 + duration1
+    end2 = start2 + duration2
+    return start1 < end2 and start2 < end1
+
+
+def is_slot_taken(business_id, date_iso, new_time, new_service):
+    new_service_info = get_service_info(business_id, new_service)
+    new_duration = int(new_service_info.get("duration", 45))
+    new_start = time_to_minutes(new_time)
+
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
         """
-        SELECT 1
+        SELECT service, time
         FROM reservations
         WHERE business_id = %s
           AND date = %s
-          AND time = %s
           AND status = 'CONFIRMED'
-        LIMIT 1
         """,
-        (business_id, date, time_),
+        (business_id, date_iso),
     )
-    row = c.fetchone()
+    rows = c.fetchall()
     conn.close()
-    return row is not None
+
+    for row in rows:
+        existing_service = row["service"]
+        existing_time = row["time"]
+
+        normalized_existing_time = normalize_time_str(existing_time)
+        if not normalized_existing_time:
+            continue
+
+        existing_service_info = get_service_info(business_id, existing_service)
+        existing_duration = int(existing_service_info.get("duration", 45))
+        existing_start = time_to_minutes(normalized_existing_time)
+
+        if ranges_overlap(new_start, new_duration, existing_start, existing_duration):
+            return True
+
+    return False
 
 
-def send_reservation_confirmation(phone, name, service, date, time, business, calendar_added=False):
+def send_reservation_confirmation(phone, name, service, date, time, business, calendar_added=False, lang="en"):
     service_info = get_service_info(business["id"], service)
     total_price = service_info["price"]
 
     calendar_line = "\n🗓 Also added to our Google Calendar." if calendar_added else ""
 
-    message = (
+    base_message = (
         f"✅ Your reservation is confirmed!\n"
         f"Name: {name}\n"
         f"Service: {service}\n"
@@ -358,7 +387,9 @@ def send_reservation_confirmation(phone, name, service, date, time, business, ca
         f"{calendar_line}\n\n"
         f"Thank you for booking with us 🤍"
     )
-    send_message(phone, message, business)
+
+    final_message = humanize_reply(lang, base_message, purpose="confirmation")
+    send_message(phone, final_message, business)
 
 
 def send_reservation_cancellation(phone, name, service, date, time, business):
@@ -697,7 +728,60 @@ def is_time_within_business_hours(time_str, open_time, close_time):
     start = datetime.strptime(open_time, "%H:%M").time()
     end = datetime.strptime(close_time, "%H:%M").time()
     return start <= chosen <= end
+def humanize_reply(lang, fallback_text, purpose="general"):
+    if not OPENROUTER_API_KEY:
+        return fallback_text
 
+    system_msg = (
+        "You rewrite booking assistant messages to sound warm, human, short, and natural. "
+        "Do not change the meaning. "
+        "Do not invent details. "
+        "Do not add extra steps unless the original text asks a question. "
+        "Keep dates, times, prices, and service names exactly as given. "
+        "Reply in the same language as the user message language code provided."
+    )
+
+    user_msg = (
+        f"Language: {lang}\n"
+        f"Purpose: {purpose}\n"
+        f"Original message:\n{fallback_text}\n\n"
+        "Rewrite it in a friendlier way. Return plain text only."
+    )
+
+    try:
+        resp = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": OPENROUTER_MODEL,
+                "messages": [
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": user_msg},
+                ],
+                "temperature": 0.5,
+            },
+            timeout=10,
+        )
+
+        if not resp.ok:
+            print("humanize_reply status:", resp.status_code)
+            print("humanize_reply body:", resp.text)
+            return fallback_text
+
+        data = resp.json()
+        content = data["choices"][0]["message"]["content"].strip()
+        return content or fallback_text
+
+    except Exception as e:
+        print("humanize_reply error:", e)
+        return fallback_text
+
+def send_friendly_message(phone, business, lang, text, purpose="general"):
+    final_text = humanize_reply(lang, text, purpose=purpose)
+    send_message(phone, final_text, business)
 
 def process_incoming_message(business, phone, text):
     global user_state
@@ -717,13 +801,13 @@ def process_incoming_message(business, phone, text):
         "مرحبا", "اهلا", "أهلا", "سلام",
         "hi kifak", "hi kifik", "kifak", "kifik"
     ]:
-        send_message(phone, tr(lang, "greeting"), business)
+        send_friendly_message(phone, business, lang, tr(lang, "greeting"), purpose="greeting")
         return "ok", 200
 
     # START BOOKING
     if is_booking_intent(lt):
         user_state[key] = {"step": "awaiting_name", "lang": lang}
-        send_message(phone, tr(lang, "ask_name"), business)
+        send_friendly_message(phone, business, lang, tr(lang, "ask_name"), purpose="ask_name")
         return "ok", 200
 
     # CANCEL BOOKING
@@ -756,16 +840,18 @@ def process_incoming_message(business, phone, text):
 
         # User repeated a command instead of giving a name
         if is_booking_intent(t) or is_cancel_intent(t):
-            send_message(phone, tr(lang, "ask_name"), business)
+            send_friendly_message(phone, business, lang, tr(lang, "ask_name"), purpose="ask_name")
             return "ok", 200
 
         state["name"] = t
         state["step"] = "awaiting_service"
 
-        send_message(
+        send_friendly_message(
             phone,
-            tr(lang, "ask_service", name=t),
             business,
+            lang,
+            tr(lang, "ask_service", name=t),
+            purpose="ask_service",
         )
         return "ok", 200
 
@@ -870,11 +956,13 @@ def process_incoming_message(business, phone, text):
             send_message(phone, tr(lang, "outside_hours"), business)
             return "ok", 200
 
-        if is_slot_taken(business["id"], state["date"], time_):
+        if is_slot_taken(business["id"], state["date"], time_, state["service"]):
             send_message(
                 phone,
-                tr(lang, "slot_taken", date=state["date"], time=time_),
                 business,
+                lang,
+                tr(lang, "slot_taken", date=state["date"], time=time_),
+                purpose="slot_taken",
             )
             return "ok", 200
 
@@ -912,6 +1000,7 @@ def process_incoming_message(business, phone, text):
                 state.get("time", ""),
                 business,
                 calendar_added=bool(gcal_event),
+                lang=lang,
             )
 
             user_state.pop(key, None)
@@ -919,7 +1008,7 @@ def process_incoming_message(business, phone, text):
 
         except Exception as e:
             print("STEP 4 save error:", str(e))
-            send_message(phone, tr(lang, "save_error"), business)
+            send_friendly_message(phone, business, lang, tr(lang, "save_error"), purpose="error")
             return "ok", 200
 
 

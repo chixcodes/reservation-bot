@@ -3,42 +3,99 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>EzReserve | Login</title>
+    <title>EzReserve | Business Login</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body class="min-h-screen bg-slate-50 flex items-center justify-center px-4">
-    <div class="w-full max-w-md bg-white rounded-3xl shadow-xl border border-slate-200 p-8">
-        <div class="text-center mb-8">
-            <div class="w-14 h-14 mx-auto rounded-2xl bg-indigo-600 text-white flex items-center justify-center text-2xl font-bold mb-4">
-                E
+<body class="min-h-screen bg-slate-50 text-slate-800">
+    <div class="min-h-screen grid lg:grid-cols-2">
+        <!-- Left side -->
+        <div class="hidden lg:flex flex-col justify-between bg-slate-900 text-white p-12">
+            <div>
+                <div class="flex items-center gap-3 mb-10">
+                    <div class="w-12 h-12 rounded-2xl bg-indigo-600 flex items-center justify-center text-2xl font-bold">
+                        E
+                    </div>
+                    <div>
+                        <h1 class="text-2xl font-bold">EzReserve</h1>
+                        <p class="text-slate-400 text-sm">Smart WhatsApp reservations</p>
+                    </div>
+                </div>
+
+                <div class="max-w-md">
+                    <h2 class="text-4xl font-bold leading-tight mb-4">
+                        Manage bookings, services, and availability in one place.
+                    </h2>
+                    <p class="text-slate-300 text-lg leading-8">
+                        Log in to access your dashboard, manage reservations, set your schedule,
+                        and keep your Google Calendar in sync.
+                    </p>
+                </div>
             </div>
-            <h1 class="text-2xl font-bold text-slate-900">Business Login</h1>
-            <p class="text-slate-500 mt-2">Access your EzReserve dashboard</p>
+
+            <div class="grid grid-cols-1 gap-4 max-w-md">
+                <div class="rounded-2xl bg-slate-800/70 border border-slate-700 p-4">
+                    <p class="font-semibold mb-1">Reservations</p>
+                    <p class="text-sm text-slate-400">View and cancel bookings instantly.</p>
+                </div>
+                <div class="rounded-2xl bg-slate-800/70 border border-slate-700 p-4">
+                    <p class="font-semibold mb-1">Availability</p>
+                    <p class="text-sm text-slate-400">Set closed days, working hours, and blocked dates.</p>
+                </div>
+                <div class="rounded-2xl bg-slate-800/70 border border-slate-700 p-4">
+                    <p class="font-semibold mb-1">Calendar Sync</p>
+                    <p class="text-sm text-slate-400">Keep reservations visible in Google Calendar.</p>
+                </div>
+            </div>
         </div>
 
-        <form method="post" action="/login" class="space-y-5">
-            <div>
-                <label class="block text-sm font-medium text-slate-700 mb-2">Username</label>
-                <input type="text" name="username" required
-                       class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        <!-- Right side -->
+        <div class="flex items-center justify-center px-4 py-10">
+            <div class="w-full max-w-md bg-white rounded-3xl shadow-xl border border-slate-200 p-8">
+                <div class="text-center mb-8">
+                    <div class="w-14 h-14 mx-auto rounded-2xl bg-indigo-600 text-white flex items-center justify-center text-2xl font-bold mb-4">
+                        E
+                    </div>
+                    <h1 class="text-2xl font-bold text-slate-900">Business Login</h1>
+                    <p class="text-slate-500 mt-2">Access your EzReserve dashboard</p>
+                </div>
+
+                {% if error %}
+                <div class="mb-5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                    {{ error }}
+                </div>
+                {% endif %}
+
+                {% if success %}
+                <div class="mb-5 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+                    {{ success }}
+                </div>
+                {% endif %}
+
+                <form method="post" action="/login" class="space-y-5">
+                    <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-2">Username</label>
+                        <input type="text" name="username" required
+                               class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-2">Password</label>
+                        <input type="password" name="password" required
+                               class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    </div>
+
+                    <button type="submit"
+                            class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-xl transition">
+                        Login
+                    </button>
+                </form>
+
+                <p class="text-sm text-slate-500 text-center mt-6">
+                    No account?
+                    <a href="/register" class="text-indigo-600 font-semibold hover:underline">Register here</a>
+                </p>
             </div>
-
-            <div>
-                <label class="block text-sm font-medium text-slate-700 mb-2">Password</label>
-                <input type="password" name="password" required
-                       class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-            </div>
-
-            <button type="submit"
-                    class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-xl transition">
-                Login
-            </button>
-        </form>
-
-        <p class="text-sm text-slate-500 text-center mt-6">
-            No account?
-            <a href="/register" class="text-indigo-600 font-semibold hover:underline">Register here</a>
-        </p>
+        </div>
     </div>
 </body>
 </html>

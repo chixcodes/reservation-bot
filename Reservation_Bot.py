@@ -867,6 +867,16 @@ def normalize_time_str_with_hours(time_input, open_time=None, close_time=None):
     # fallback: prefer PM for daytime business use
     return candidates[1]
 
+def validate_service_for_business(business_id, service_name):
+    services = get_service_names_for_business(business_id)
+    services_lower = {s.lower(): s for s in services}
+
+    exact = services_lower.get(service_name.strip().lower())
+    if exact:
+        return exact, services
+
+    return None, services
+
 def process_incoming_message(business, phone, text):
     global user_state
 
@@ -976,15 +986,32 @@ def process_incoming_message(business, phone, text):
                     normalized = ai_service
 
         if normalized is None:
-            services_text = format_service_list(business["id"])
-            send_friendly_message(
+            normalized = t
+
+        valid_service, available_services = validate_service_for_business(
+            business["id"], normalized
+        )
+
+        if not valid_service:
+            services_text = ", ".join(available_services) if available_services else "No services configured yet"
+            send_message(
                 phone,
+                f"Sorry, we don’t offer that service.\nAvailable services: {services_text}",
                 business,
-                lang,
-                f"Sorry, we do not have that service. Available services: {services_text}" if services_text else "Sorry, we do not have that service.",
-                purpose="ask_service",
             )
             return "ok", 200
+
+        print("SERVICE STEP raw:", t, "ai:", ai_service, "normalized:", valid_service)
+
+        state["service"] = valid_service
+        state["step"] = "awaiting_date"
+
+        send_message(
+            phone,
+            tr(lang, "ask_date", service=valid_service),
+            business,
+        )
+        return "ok", 200
 
         print("SERVICE STEP raw:", t, "ai:", ai_service, "normalized:", normalized)
 

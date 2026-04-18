@@ -1,30 +1,29 @@
 # Reservation_Bot.py — CLEANED VERSION
 
-import os
-import psycopg2
-from db_utils import get_db_connection, init_db
-import requests
 import json
+import os
+import re
+import sys
 from datetime import datetime, timedelta
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-from gcal import create_event, delete_event
+
+import psycopg2
+import pytz
+import requests
+from dateutil import parser as dtparse
 from dotenv import load_dotenv
 from flask import (
     Flask,
-    request,
+    jsonify,
+    redirect,
     render_template,
     render_template_string,
+    request,
     session,
-    redirect,
-    url_for,
-    jsonify,
 )
-from werkzeug.security import generate_password_hash, check_password_hash
-from datetime import datetime
-from dateutil import parser as dtparse
-import pytz
-import sys
+from gcal import create_event, delete_event
+from werkzeug.security import check_password_hash, generate_password_hash
+
+from db_utils import get_db_connection, init_db
 
 # ------------------ DB CONFIG ------------------
 DB_FILENAME = "reservation_v2.db"###
@@ -67,7 +66,7 @@ def get_business_by_id(business_id: int):
 # ------------------ FLASK APP ------------------
 
 app = Flask(__name__)
-app.secret_key = "CHANGE_THIS_SECRET_KEY"  # change in production
+app.secret_key = os.getenv("SECRET_KEY", "change-me-in-render")
 
 # ------------------ CONFIG (.env) ------------------
 
@@ -114,7 +113,6 @@ SERVICE_KEYWORDS = {
 
 
 def send_message(to: str, text: str, business: dict):
-
     if not business.get("phone_number_id") or not business.get("access_token"):
         print("send_message: missing phone_number_id or access_token for business")
         return
@@ -133,11 +131,10 @@ def send_message(to: str, text: str, business: dict):
 
     try:
         r = requests.post(url, headers=headers, json=payload, timeout=15)
-        print("send_message: meta", r.status_code, r.text)
+        print("send_message status:", r.status_code, flush=True)
+        print("send_message body:", r.text, flush=True)
     except Exception as e:
         print("send_message error (meta):", e)
-    print("send_message status:", r.status_code, flush=True)
-    print("send_message body:", r.text, flush=True)
 
 def ai_pick_service(business: dict, user_text: str):
     """
@@ -170,6 +167,8 @@ def ai_pick_service(business: dict, user_text: str):
             headers={
                 "Authorization": f"Bearer {OPENROUTER_API_KEY}",
                 "Content-Type": "application/json",
+                "HTTP-Referer": "https://api.ezrezerve.com",
+                "X-Title": "EzReserve",
             },
             json={
                 "model": OPENROUTER_MODEL,
@@ -205,23 +204,43 @@ def ai_pick_service(business: dict, user_text: str):
 def get_service_info(business_id, service_name):
     conn = get_db_connection()
     c = conn.cursor()
+
     c.execute(
         """
-        SELECT price, duration_min
+        SELECT name, price, duration_min
         FROM services
-        WHERE business_id = %s AND lower(name) = lower(%s)
+        WHERE business_id = %s
+          AND lower(trim(name)) = lower(trim(%s))
+        LIMIT 1
         """,
         (business_id, service_name),
     )
     row = c.fetchone()
+
+    if not row:
+        c.execute(
+            """
+            SELECT name, price, duration_min
+            FROM services
+            WHERE business_id = %s
+              AND lower(name) LIKE lower(%s)
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (business_id, f"%{service_name.strip()}%"),
+        )
+        row = c.fetchone()
+
     conn.close()
 
     if row:
+        print(f"get_service_info matched: input={service_name!r}, db_name={row['name']!r}")
         return {
             "price": float(row["price"] or 0),
             "duration": int(row["duration_min"] or 45),
         }
 
+    print(f"get_service_info: no match for service={service_name!r}, business_id={business_id}")
     return {"price": 0.0, "duration": 45}
 
 
@@ -260,14 +279,16 @@ def normalize_time_str(tstr: str):
 
 
 def suggest_slots(
+    business_id,
     date_str,
     requested_time_str,
+    new_service,
     open_start="09:00",
     open_end="18:00",
     step_min=30,
     max_suggestions=3,
 ):
-    norm_req = normalize_time_str(requested_time_str)
+    norm_req = normalize_time_str_with_hours(requested_time_str, open_start, open_end)
     if norm_req is None:
         norm_req = open_start
 
@@ -284,10 +305,10 @@ def suggest_slots(
         base += timedelta(minutes=step_min)
 
     free = []
-    for t in slots:
-        hhmm = f"{t.hour:02d}:{t.minute:02d}"
-        if not is_slot_taken(date_str, hhmm):
-            free.append(t)
+    for slot_time in slots:
+        hhmm = f"{slot_time.hour:02d}:{slot_time.minute:02d}"
+        if not is_slot_taken(business_id, date_str, hhmm, new_service):
+            free.append(slot_time)
 
     def minutes(t):
         return t.hour * 60 + t.minute
@@ -403,8 +424,11 @@ def send_reservation_cancellation(phone, name, service, date, time, business):
     )
     send_message(phone, message, business)
 
-def add_reservation_to_google_calendar(name, service, date, time_):
+def add_reservation_to_google_calendar(business, name, service, date, time_):
     try:
+        service_info = get_service_info(business["id"], service)
+        duration_min = int(service_info.get("duration", 45))
+
         summary = f"{service} - {name}"
         description = (
             f"Customer: {name}\n"
@@ -418,8 +442,8 @@ def add_reservation_to_google_calendar(name, service, date, time_):
             date_str=date,
             time_str=time_,
             description=description,
-            calendar_id="primary",
-            duration_min=45,
+            calendar_id=business.get("calendar_id") or "primary",
+            duration_min=duration_min,
         )
 
         print("Google Calendar event created:", event.get("id"))
@@ -469,7 +493,7 @@ def mark_reservations_cancelled_by_phone(business_id, phone):
     c.execute(
         """
         UPDATE reservations
-        SET status = 'CANCELLED'
+        SET status = 'CANCELED'
         WHERE business_id = %s
           AND customer_phone = %s
           AND status = 'CONFIRMED'
@@ -482,8 +506,6 @@ def mark_reservations_cancelled_by_phone(business_id, phone):
     return affected
 
 # ------------------ CONVERSATION LOGIC ------------------
-import re
-
 def detect_lang(text):
     t = (text or "").strip()
 
@@ -592,10 +614,6 @@ def tr(lang, key, **kwargs):
     lang_messages = messages.get(key, {})
     template = lang_messages.get(lang) or lang_messages.get("en") or key
     return template.format(**kwargs)
-from datetime import datetime
-from dateutil import parser as dtparse
-import pytz
-
 WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 
@@ -862,7 +880,7 @@ def process_incoming_message(business, phone, text):
         "hi", "hello", "hey", "hii", "heyy", "hola",
         "bonjour", "salut",
         "مرحبا", "اهلا", "أهلا", "سلام",
-        "hi kifak", "hi kifik", "kifak", "kifik"
+        "hi kifak", "hi kifik", "kifak", "kifik",
     ]:
         send_friendly_message(phone, business, lang, tr(lang, "greeting"), purpose="greeting")
         return "ok", 200
@@ -878,30 +896,31 @@ def process_incoming_message(business, phone, text):
         reservations = get_confirmed_reservations_for_phone(business["id"], phone)
 
         if not reservations:
-            send_message(phone, tr(lang, "no_active_cancel"), business)
+            send_friendly_message(phone, business, lang, tr(lang, "no_active_cancel"), purpose="cancel")
             return "ok", 200
 
         deleted_count = 0
-        for r in reservations:
-            event_id = r.get("google_event_id")
-            if event_id:
-                if delete_event(event_id, calendar_id="primary"):
-                    deleted_count += 1
+        for reservation in reservations:
+            event_id = reservation.get("google_event_id")
+            if event_id and delete_event(event_id, calendar_id=business.get("calendar_id") or "primary"):
+                deleted_count += 1
 
         cancelled_count = mark_reservations_cancelled_by_phone(business["id"], phone)
 
-        send_message(
+        send_friendly_message(
             phone,
-            tr(lang, "cancel_done", count=cancelled_count, events=deleted_count),
             business,
+            lang,
+            tr(lang, "cancel_done", count=cancelled_count, events=deleted_count),
+            purpose="cancel",
         )
+        user_state.pop(key, None)
         return "ok", 200
 
     # STEP 1 – NAME
     if state and state.get("step") == "awaiting_name":
         lang = state.get("lang", lang)
 
-        # User repeated a command instead of giving a name
         if is_booking_intent(t) or is_cancel_intent(t):
             send_friendly_message(phone, business, lang, tr(lang, "ask_name"), purpose="ask_name")
             return "ok", 200
@@ -918,17 +937,18 @@ def process_incoming_message(business, phone, text):
         )
         return "ok", 200
 
-    # STEP 2 – SERVICE (keywords + AI fallback)
+    # STEP 2 – SERVICE
     if state and state.get("step") == "awaiting_service":
         lang = state.get("lang", lang)
         lt2 = t.lower()
 
-        # User repeated a command instead of giving a service
         if is_booking_intent(t) or is_cancel_intent(t):
-            send_message(
+            send_friendly_message(
                 phone,
-                tr(lang, "ask_service", name=state.get("name", "")),
                 business,
+                lang,
+                tr(lang, "ask_service", name=state.get("name", "")),
+                purpose="ask_service",
             )
             return "ok", 200
 
@@ -944,11 +964,10 @@ def process_incoming_message(business, phone, text):
             normalized = "Haircut and Beard"
         elif matched:
             normalized = next(iter(matched))
-        else:
-            if OPENROUTER_API_KEY:
-                ai_service = ai_pick_service(business, t)
-                if ai_service:
-                    normalized = ai_service
+        elif OPENROUTER_API_KEY:
+            ai_service = ai_pick_service(business, t)
+            if ai_service:
+                normalized = ai_service
 
         if normalized is None:
             normalized = t
@@ -958,10 +977,12 @@ def process_incoming_message(business, phone, text):
         state["service"] = normalized
         state["step"] = "awaiting_date"
 
-        send_message(
+        send_friendly_message(
             phone,
-            tr(lang, "ask_date", service=normalized),
             business,
+            lang,
+            tr(lang, "ask_date", service=normalized),
+            purpose="ask_date",
         )
         return "ok", 200
 
@@ -970,28 +991,30 @@ def process_incoming_message(business, phone, text):
         lang = state.get("lang", lang)
 
         if is_booking_intent(t) or is_cancel_intent(t):
-            send_message(
+            send_friendly_message(
                 phone,
-                tr(lang, "ask_date", service=state.get("service", "")),
                 business,
+                lang,
+                tr(lang, "ask_date", service=state.get("service", "")),
+                purpose="ask_date",
             )
             return "ok", 200
 
         try:
             normalized_date = normalize_booking_date(t)
         except Exception:
-            send_message(phone, tr(lang, "invalid_date"), business)
+            send_friendly_message(phone, business, lang, tr(lang, "invalid_date"), purpose="invalid_date")
             return "ok", 200
 
         day_rules = get_day_rules(business["id"], normalized_date)
         if day_rules.get("closed"):
-            send_message(phone, tr(lang, "closed_day"), business)
+            send_friendly_message(phone, business, lang, tr(lang, "closed_day"), purpose="closed_day")
             return "ok", 200
 
         state["date"] = normalized_date
         state["step"] = "awaiting_time"
 
-        send_message(phone, tr(lang, "ask_time"), business)
+        send_friendly_message(phone, business, lang, tr(lang, "ask_time"), purpose="ask_time")
         return "ok", 200
 
     # STEP 4 – TIME
@@ -999,12 +1022,12 @@ def process_incoming_message(business, phone, text):
         lang = state.get("lang", lang)
 
         if is_booking_intent(t) or is_cancel_intent(t):
-            send_message(phone, tr(lang, "ask_time"), business)
+            send_friendly_message(phone, business, lang, tr(lang, "ask_time"), purpose="ask_time")
             return "ok", 200
 
         day_rules = get_day_rules(business["id"], state["date"])
         if day_rules.get("closed"):
-            send_message(phone, tr(lang, "closed_day"), business)
+            send_friendly_message(phone, business, lang, tr(lang, "closed_day"), purpose="closed_day")
             return "ok", 200
 
         time_ = normalize_time_str_with_hours(
@@ -1014,22 +1037,17 @@ def process_incoming_message(business, phone, text):
         )
 
         if not time_:
-            send_message(phone, tr(lang, "invalid_time"), business)
+            send_friendly_message(phone, business, lang, tr(lang, "invalid_time"), purpose="invalid_time")
             return "ok", 200
 
         state["time"] = time_
 
-        day_rules = get_day_rules(business["id"], state["date"])
-        if day_rules.get("closed"):
-            send_message(phone, tr(lang, "closed_day"), business)
-            return "ok", 200
-
         if not is_time_within_business_hours(time_, day_rules["open_time"], day_rules["close_time"]):
-            send_message(phone, tr(lang, "outside_hours"), business)
+            send_friendly_message(phone, business, lang, tr(lang, "outside_hours"), purpose="outside_hours")
             return "ok", 200
 
         if is_slot_taken(business["id"], state["date"], time_, state["service"]):
-            send_message(
+            send_friendly_message(
                 phone,
                 business,
                 lang,
@@ -1050,6 +1068,7 @@ def process_incoming_message(business, phone, text):
             print("Reservation saved with id:", reservation_id)
 
             gcal_event = add_reservation_to_google_calendar(
+                business,
                 state.get("name", ""),
                 state.get("service", ""),
                 state.get("date", ""),
@@ -1083,9 +1102,10 @@ def process_incoming_message(business, phone, text):
             send_friendly_message(phone, business, lang, tr(lang, "save_error"), purpose="error")
             return "ok", 200
 
-
+    return "ok", 200
 
 # ------------------ WEBHOOK ------------------
+
 
 @app.route("/")
 def home():
@@ -1151,7 +1171,7 @@ def reservations_page():
     c = conn.cursor()
     c.execute(
         """
-        SELECT id, customer_phone, customer_name, service, date, time, created_at
+        SELECT id, customer_phone, customer_name, service, date, time, status
         FROM reservations
         ORDER BY id DESC
         """
@@ -1164,10 +1184,18 @@ def reservations_page():
     <table border="1" cellpadding="6">
       <tr>
         <th>ID</th><th>Phone</th><th>Name</th>
-        <th>Service</th><th>Date</th><th>Time</th><th>Created</th>
+        <th>Service</th><th>Date</th><th>Time</th><th>Status</th>
       </tr>
       {% for r in rows %}
-        <tr>{% for v in r %}<td>{{v}}</td>{% endfor %}</tr>
+        <tr>
+          <td>{{ r.id }}</td>
+          <td>{{ r.customer_phone }}</td>
+          <td>{{ r.customer_name }}</td>
+          <td>{{ r.service }}</td>
+          <td>{{ r.date }}</td>
+          <td>{{ r.time }}</td>
+          <td>{{ r.status }}</td>
+        </tr>
       {% endfor %}
     </table>
     """
@@ -1176,8 +1204,6 @@ def reservations_page():
 
 # ------------------ ADMIN BUSINESSES ------------------ #
 
-
-from flask import render_template_string, request  # make sure this is imported at the top
 
 @app.route("/admin/businesses", methods=["GET", "POST"])
 def admin_businesses():
@@ -1350,7 +1376,7 @@ def admin_services(business_id):
     </form>
 
     <p style="margin-top:20px;">
-      <a href="/dashboard %s business_id={{ business_id }}">Back to dashboard</a> |
+      <a href="/dashboard?business_id={{ business_id }}">Back to dashboard</a> |
       <a href="/admin/businesses">Back to businesses</a>
     </p>
     """
@@ -1367,76 +1393,92 @@ def admin_services(business_id):
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
-    if request.method == "POST":
-        email = request.form.get("email", "").strip()
-        password = request.form.get("password", "").strip()
+    if request.method == "GET":
+        return render_template("register.html")
 
-        conn = get_db_connection()
-        c = conn.cursor()
+    business_name = (request.form.get("business_name") or "").strip()
+    username = (request.form.get("username") or "").strip().lower()
+    password = (request.form.get("password") or "").strip()
 
-        # pick first business by default
-        c.execute("SELECT id FROM businesses ORDER BY id LIMIT 1")
-        row = c.fetchone()
-        if not row:
-            conn.close()
-            return "No business exists yet. Create one in /admin/businesses first.", 400
+    if not business_name or not username or not password:
+        return render_template("register.html", error="Please fill in all fields.")
 
-        business_id = row[0]
-        pw_hash = generate_password_hash(password)
+    conn = get_db_connection()
+    c = conn.cursor()
 
-        try:
-            c.execute(
-                "INSERT INTO users(business_id, email, password_hash) VALUES (%s, %s, %s)",
-                (business_id, email, pw_hash),
-            )
-            conn.commit()
-        except Exception as e:
-            conn.close()
-            return f"Error creating user (maybe email already used): {e}", 400
+    try:
+        c.execute("SELECT id FROM users WHERE email = %s", (username,))
+        if c.fetchone():
+            return render_template("register.html", error="This username is already taken.")
 
+        c.execute(
+            """
+            INSERT INTO businesses (name, calendar_id, timezone)
+            VALUES (%s, 'primary', 'Asia/Beirut')
+            RETURNING id
+            """,
+            (business_name,),
+        )
+        business_id = c.fetchone()["id"]
+
+        password_hash = generate_password_hash(password)
+        c.execute(
+            """
+            INSERT INTO users (email, password_hash, business_id)
+            VALUES (%s, %s, %s)
+            """,
+            (username, password_hash, business_id),
+        )
+
+        conn.commit()
+        session["business_id"] = business_id
+        return redirect("/dashboard?tab=settings")
+
+    except Exception as e:
+        conn.rollback()
+        print("register error:", str(e))
+        return render_template("register.html", error="Something went wrong while creating the account.")
+    finally:
         conn.close()
-        return redirect("/login")
-
-    return """
-    <h3>Register dashboard user</h3>
-    <p>(Will be attached to the first business in DB)</p>
-    <form method="POST">
-        Email:<br><input name="email"><br>
-        Password:<br><input name="password" type="password"><br><br>
-        <button>Register</button>
-    </form>
-    """
 
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    if request.method == "POST":
-        email = request.form.get("email", "").strip()
-        password = request.form.get("password", "").strip()
+    if request.method == "GET":
+        return render_template("login.html")
 
-        conn = get_db_connection()
-        c = conn.cursor()
+    username = (request.form.get("username") or "").strip().lower()
+    password = (request.form.get("password") or "").strip()
+
+    if not username or not password:
+        return render_template("login.html", error="Please enter your username and password.")
+
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    try:
         c.execute(
-            "SELECT id, business_id, password_hash FROM users WHERE email=%s", (email,)
+            """
+            SELECT id, email, password_hash, business_id
+            FROM users
+            WHERE email = %s
+            """,
+            (username,),
         )
         user = c.fetchone()
+
+        if not user or not check_password_hash(user["password_hash"], password):
+            return render_template("login.html", error="Invalid username or password.")
+
+        session["user_id"] = user["id"]
+        session["business_id"] = user["business_id"]
+        return redirect("/dashboard")
+
+    except Exception as e:
+        print("login error:", str(e))
+        return render_template("login.html", error="Something went wrong while logging in.")
+    finally:
         conn.close()
-
-        if user and check_password_hash(user["password_hash"], password):
-            session["user_id"] = user["id"]
-            session["business_id"] = user["business_id"]
-            return redirect("/dashboard")
-
-        return "Invalid login", 403
-
-    return """
-    <h3>Login</h3>
-    <form method="POST">
-        Email:<br><input name="email"><br>
-        Password:<br><input name="password" type="password"><br><br>
-        <button>Login</button>
-    </form>
-    """
 
 
 @app.route("/logout")
@@ -1538,51 +1580,7 @@ def dashboard():
 
 @app.route("/confirm/<int:reservation_id>")
 def confirm_reservation(reservation_id):
-    if "business_id" not in session:
-        return redirect("/login")
-
-    business_id = session["business_id"]
-
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute(
-        """
-        SELECT customer_phone, customer_name, service, date, time, status
-        FROM reservations
-        WHERE id = %s AND business_id = %s
-        """,
-        (reservation_id, business_id),
-    )
-    row = c.fetchone()
-
-    if not row:
-        conn.close()
-        return redirect("/dashboard")
-
-    phone, name, service, date, time, status = row
-
-    # If it's already confirmed (bot did it), just redirect
-    if status == "CONFIRMED":
-        conn.close()
-        return redirect("/dashboard")
-
-    # Otherwise, mark it as confirmed silently (no extra WhatsApp message)
-    c.execute(
-        """
-        UPDATE reservations
-        SET status = 'CONFIRMED'
-        WHERE id = %s AND business_id = %s
-        """,
-        (reservation_id, business_id),
-    )
-    conn.commit()
-    conn.close()
-
-    # No second send_reservation_confirmation here
     return redirect("/dashboard")
-
-
-
 
 @app.route("/cancel/<int:reservation_id>")
 def cancel_reservation(reservation_id):

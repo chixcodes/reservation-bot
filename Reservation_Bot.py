@@ -104,11 +104,21 @@ SERVICE_KEYWORDS = {
     "صبغ": "Hair Coloring",
     "صبغة": "Hair Coloring",
     "صبغ شعر": "Hair Coloring",
+    # Lebanese slang / transliteration
+    "oss cha3re": "Haircut",
+    "قص شعري": "Haircut",
+    "قص شعريي": "Haircut",
+    "قص شعري": "Haircut",
+    "cha3r": "Haircut",
+    "sha3r": "Haircut",
+    "oss": "Haircut",
+    "d2n": "Beard Trim",
+    "da2n": "Beard Trim",
+    "lehye": "Beard Trim",
 }
 
 
 # ------------------ LOW-LEVEL HELPERS ------------------
-
 
 def send_message(to: str, text: str, business: dict):
     if not business.get("phone_number_id") or not business.get("access_token"):
@@ -536,7 +546,9 @@ def is_booking_intent(text):
         "book", "booking", "reserve", "reservation", "appointment",
         "bonjour je veux reserver", "réserver", "reserver", "rdv",
         "احجز", "أحجز", "حجز", "موعد", "بدي احجز", "اريد احجز",
-        "bede ehjoz", "bade ehjoz", "ehjoz", "ehجز", "7جز", "7joz"
+        "bede ehjoz", "bade ehjoz", "ehjoz", "ehجز", "7جز", "7joz",
+        "bede oss", "bade oss", "oss cha3re", "oss sha3re", "bede oss cha3re",
+        "bade oss cha3re", "bede 2oss cha3re", "bade 2oss cha3re"
     ]
     return any(k in t for k in booking_keywords)
 

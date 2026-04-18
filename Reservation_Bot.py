@@ -1148,7 +1148,16 @@ def process_incoming_message(business, phone, text):
             send_friendly_message(phone, business, lang, tr(lang, "save_error"), purpose="error")
             return "ok", 200
 
+def is_support_user():
+    return session.get("role") == "support"
 
+
+def require_login():
+    return "user_id" in session
+
+
+def require_support():
+    return "user_id" in session and session.get("role") == "support"
 
 # ------------------ WEBHOOK ------------------
 
@@ -1246,6 +1255,8 @@ from flask import render_template_string, request  # make sure this is imported 
 
 @app.route("/admin/businesses", methods=["GET", "POST"])
 def admin_businesses():
+    if not require_support():
+        return redirect("/login")
     conn = get_db_connection()
     c = conn.cursor()
 
@@ -1341,6 +1352,8 @@ def admin_businesses():
 
 @app.route("/admin/<int:business_id>/services", methods=["GET", "POST"])
 def admin_services(business_id):
+    if not require_support():
+        return redirect("/login")
     conn = get_db_connection()
     c = conn.cursor()
 
@@ -1486,41 +1499,32 @@ def register():
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    if request.method == "GET":
-        return render_template("login.html")
+    if request.method == "POST":
+        username = request.form.get("username", "").strip().lower()
+        password = request.form.get("password", "").strip()
 
-    username = (request.form.get("username") or "").strip().lower()
-    password = (request.form.get("password") or "").strip()
-
-    if not username or not password:
-        return render_template("login.html", error="Please enter your username and password.")
-
-    conn = get_db_connection()
-    c = conn.cursor()
-
-    try:
+        conn = get_db_connection()
+        c = conn.cursor()
         c.execute(
             """
-            SELECT id, email, password_hash, business_id
+            SELECT id, business_id, password_hash, role
             FROM users
             WHERE email = %s
             """,
             (username,),
         )
         user = c.fetchone()
-
-        if not user or not check_password_hash(user["password_hash"], password):
-            return render_template("login.html", error="Invalid username or password.")
-
-        session["user_id"] = user["id"]
-        session["business_id"] = user["business_id"]
-        return redirect("/dashboard")
-
-    except Exception as e:
-        print("login error:", str(e))
-        return render_template("login.html", error="Something went wrong while logging in.")
-    finally:
         conn.close()
+
+        if user and check_password_hash(user["password_hash"], password):
+            session["user_id"] = user["id"]
+            session["business_id"] = user["business_id"]
+            session["role"] = user.get("role", "business")
+            return redirect("/dashboard")
+
+        return render_template("login.html", error="Invalid username or password.")
+
+    return render_template("login.html")
 
 
 @app.route("/logout")
@@ -1534,25 +1538,25 @@ def logout():
 
 @app.route("/dashboard")
 def dashboard():
-    business_id = session.get("business_id") or request.args.get("business_id", type=int)
+    if not require_login():
+        return redirect("/login")
+
+    requested_business_id = request.args.get("business_id", type=int)
+
+    if is_support_user() and requested_business_id:
+        business_id = requested_business_id
+    else:
+        business_id = session.get("business_id")
 
     conn = get_db_connection()
     c = conn.cursor()
 
-    if business_id is None:
-        c.execute("SELECT * FROM businesses ORDER BY id LIMIT 1")
-        business = c.fetchone()
-        if not business:
-            conn.close()
-            return redirect("/admin/businesses")
-    else:
-        c.execute("SELECT * FROM businesses WHERE id = %s", (business_id,))
-        business = c.fetchone()
-        if not business:
-            conn.close()
-            return f"No business with ID {business_id}", 404
+    c.execute("SELECT * FROM businesses WHERE id = %s", (business_id,))
+    business = c.fetchone()
+    if not business:
+        conn.close()
+        return f"No business with ID {business_id}", 404
 
-    business_id = business["id"]
     session["business_id"] = business_id
 
     ensure_default_hours(business_id)
@@ -1616,8 +1620,8 @@ def dashboard():
         active_tab=request.args.get("tab", "reservations"),
         google_calendar_connected=bool(business.get("gcal_credentials")),
         whatsapp_connected=bool(business.get("access_token")),
+        is_support=is_support_user(),
     )
-
 
 
 @app.route("/confirm/<int:reservation_id>")

@@ -282,14 +282,16 @@ def normalize_time_str(tstr: str):
 
 
 def suggest_slots(
-    date_str,
+    business_id,
+    date_iso,
     requested_time_str,
+    service_name,
     open_start="09:00",
     open_end="18:00",
-    step_min=30,
+    step_min=15,
     max_suggestions=3,
 ):
-    norm_req = normalize_time_str(requested_time_str)
+    norm_req = normalize_time_str_with_hours(requested_time_str, open_start, open_end)
     if norm_req is None:
         norm_req = open_start
 
@@ -308,7 +310,11 @@ def suggest_slots(
     free = []
     for t in slots:
         hhmm = f"{t.hour:02d}:{t.minute:02d}"
-        if not is_slot_taken(1, date_str, hhmm, ""):
+
+        if not is_time_within_business_hours(hhmm, open_start, open_end):
+            continue
+
+        if not is_slot_taken(business_id, date_iso, hhmm, service_name):
             free.append(t)
 
     def minutes(t):
@@ -952,6 +958,7 @@ def process_incoming_message(business, phone, text):
         return "ok", 200
 
     # STEP 2 – SERVICE (keywords + AI fallback)
+    # STEP 2 – SERVICE (keywords + AI fallback)
     if state and state.get("step") == "awaiting_service":
         lang = state.get("lang", lang)
         lt2 = t.lower()
@@ -994,10 +1001,12 @@ def process_incoming_message(business, phone, text):
 
         if not valid_service:
             services_text = ", ".join(available_services) if available_services else "No services configured yet"
-            send_message(
+            send_friendly_message(
                 phone,
-                f"Sorry, we don’t offer that service.\nAvailable services: {services_text}",
                 business,
+                lang,
+                f"Sorry, we don’t offer that service.\nAvailable services: {services_text}",
+                purpose="invalid_service",
             )
             return "ok", 200
 
@@ -1006,23 +1015,11 @@ def process_incoming_message(business, phone, text):
         state["service"] = valid_service
         state["step"] = "awaiting_date"
 
-        send_message(
-            phone,
-            tr(lang, "ask_date", service=valid_service),
-            business,
-        )
-        return "ok", 200
-
-        print("SERVICE STEP raw:", t, "ai:", ai_service, "normalized:", normalized)
-
-        state["service"] = normalized
-        state["step"] = "awaiting_date"
-
         send_friendly_message(
             phone,
             business,
             lang,
-            tr(lang, "ask_date", service=normalized),
+            tr(lang, "ask_date", service=valid_service),
             purpose="ask_date",
         )
         return "ok", 200
@@ -1093,13 +1090,30 @@ def process_incoming_message(business, phone, text):
             return "ok", 200
 
         if is_slot_taken(business["id"], state["date"], time_, state["service"]):
-            send_friendly_message(
-                phone,
-                business,
-                lang,
-                tr(lang, "slot_taken", date=state["date"], time=time_),
-                purpose="slot_taken",
+            suggestions = suggest_slots(
+                business["id"],
+                state["date"],
+                time_,
+                state["service"],
+                open_start=day_rules["open_time"],
+                open_end=day_rules["close_time"],
+                step_min=15,
+                max_suggestions=3,
             )
+
+            if suggestions:
+                suggestions_text = ", ".join(suggestions)
+                send_message(
+                    phone,
+                    f"Sorry, {state['date']} at {time_} is already booked.\nClosest available times: {suggestions_text}",
+                    business,
+                )
+            else:
+                send_message(
+                    phone,
+                    f"Sorry, {state['date']} at {time_} is already booked and there are no nearby available times.",
+                    business,
+                )
             return "ok", 200
 
         try:
@@ -1214,39 +1228,6 @@ def webhook():
 
     print("Calling process_incoming_message...", flush=True)
     return process_incoming_message(business, phone, text)
-
-
-# ------------------ SIMPLE DEBUG RESERVATIONS PAGE ------------------
-
-
-@app.route("/reservations")
-def reservations_page():
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute(
-        """
-        SELECT id, customer_phone, customer_name, service, date, time, status
-        FROM reservations
-        ORDER BY id DESC
-        """
-    )
-    rows = c.fetchall()
-    conn.close()
-
-    html = """
-    <h2>Reservations</h2>
-    <table border="1" cellpadding="6">
-      <tr>
-        <th>ID</th><th>Phone</th><th>Name</th>
-        <th>Service</th><th>Date</th><th>Time</th><th>Status</th>
-      </tr>
-      {% for r in rows %}
-        <tr>{% for v in r %}<td>{{v}}</td>{% endfor %}</tr>
-      {% endfor %}
-    </table>
-    """
-    return render_template_string(html, rows=rows)
-
 
 # ------------------ ADMIN BUSINESSES ------------------ #
 
@@ -1623,55 +1604,6 @@ def dashboard():
         is_support=is_support_user(),
     )
 
-
-@app.route("/confirm/<int:reservation_id>")
-def confirm_reservation(reservation_id):
-    if "business_id" not in session:
-        return redirect("/login")
-
-    business_id = session["business_id"]
-
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute(
-        """
-        SELECT customer_phone, customer_name, service, date, time, status
-        FROM reservations
-        WHERE id = %s AND business_id = %s
-        """,
-        (reservation_id, business_id),
-    )
-    row = c.fetchone()
-
-    if not row:
-        conn.close()
-        return redirect("/dashboard")
-
-    status = row["status"]
-
-    # If it's already confirmed (bot did it), just redirect
-    if status == "CONFIRMED":
-        conn.close()
-        return redirect("/dashboard")
-
-    # Otherwise, mark it as confirmed silently (no extra WhatsApp message)
-    c.execute(
-        """
-        UPDATE reservations
-        SET status = 'CONFIRMED'
-        WHERE id = %s AND business_id = %s
-        """,
-        (reservation_id, business_id),
-    )
-    conn.commit()
-    conn.close()
-
-    # No second send_reservation_confirmation here
-    return redirect("/dashboard")
-
-
-
-
 @app.route("/cancel/<int:reservation_id>")
 def cancel_reservation(reservation_id):
     if "business_id" not in session:
@@ -1730,116 +1662,6 @@ def cancel_reservation(reservation_id):
             print("Error sending WhatsApp cancellation:", e)
 
     return redirect("/dashboard")
-
-@app.route("/temp/list-tables", methods=["GET"])
-def temp_list_tables():
-    try:
-        admin_key = request.headers.get("X-Admin-Key", "")
-        expected_key = os.getenv("TEMP_ADMIN_KEY", "")
-
-        if not expected_key or admin_key != expected_key:
-            return jsonify({"ok": False, "error": "unauthorized"}), 403
-
-        database_url = os.getenv("DATABASE_URL")
-        if not database_url:
-            return jsonify({"ok": False, "error": "DATABASE_URL is missing"}), 500
-
-        conn = psycopg2.connect(database_url, sslmode="require")
-        cur = conn.cursor()
-
-        cur.execute("""
-            SELECT table_name
-            FROM information_schema.tables
-            WHERE table_schema = 'public'
-            ORDER BY table_name
-        """)
-
-        tables = [row[0] for row in cur.fetchall()]
-
-        cur.close()
-        conn.close()
-
-        return jsonify({"ok": True, "tables": tables}), 200
-
-    except Exception as e:
-        print("temp_list_tables error:", str(e))
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-@app.route("/temp/table-columns/<table_name>", methods=["GET"])
-def temp_table_columns(table_name):
-    try:
-        admin_key = request.headers.get("X-Admin-Key", "")
-        expected_key = os.getenv("TEMP_ADMIN_KEY", "")
-
-        if not expected_key or admin_key != expected_key:
-            return jsonify({"ok": False, "error": "unauthorized"}), 403
-
-        database_url = os.getenv("DATABASE_URL")
-        if not database_url:
-            return jsonify({"ok": False, "error": "DATABASE_URL is missing"}), 500
-
-        conn = psycopg2.connect(database_url, sslmode="require")
-        cur = conn.cursor()
-
-        cur.execute("""
-            SELECT column_name, data_type
-            FROM information_schema.columns
-            WHERE table_schema = 'public'
-              AND table_name = %s
-            ORDER BY ordinal_position
-        """, (table_name,))
-
-        columns = [{"name": row[0], "type": row[1]} for row in cur.fetchall()]
-
-        cur.close()
-        conn.close()
-
-        return jsonify({"ok": True, "table": table_name, "columns": columns}), 200
-
-    except Exception as e:
-        print("temp_table_columns error:", str(e))
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-@app.route("/temp/view-reservations", methods=["GET"])
-def temp_view_reservations():
-    try:
-        admin_key = request.headers.get("X-Admin-Key", "")
-        expected_key = os.getenv("TEMP_ADMIN_KEY", "")
-
-        if not expected_key or admin_key != expected_key:
-            return jsonify({"ok": False, "error": "unauthorized"}), 403
-
-        database_url = os.getenv("DATABASE_URL")
-        if not database_url:
-            return jsonify({"ok": False, "error": "DATABASE_URL is missing"}), 500
-
-        conn = psycopg2.connect(database_url, sslmode="require")
-        cur = conn.cursor()
-
-        cur.execute("SELECT * FROM reservations ORDER BY id DESC LIMIT 50")
-        rows = cur.fetchall()
-
-        column_names = [desc[0] for desc in cur.description]
-
-        reservations = []
-        for row in rows:
-            item = {}
-            for i, value in enumerate(row):
-                item[column_names[i]] = str(value) if value is not None else None
-            reservations.append(item)
-
-        cur.close()
-        conn.close()
-
-        return jsonify({
-            "ok": True,
-            "count": len(reservations),
-            "reservations": reservations
-        }), 200
-
-    except Exception as e:
-        print("temp_view_reservations error:", str(e))
-        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/settings/update", methods=["POST"])

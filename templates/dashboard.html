@@ -110,7 +110,7 @@
                                             {% endif %}
                                         </td>
                                         <td class="px-5 py-4 text-right">
-                                            {% if r.status != "CANCELED" %}
+                                            {% if r.status != "CONFIRMED" %}
                                             <a href="/cancel/{{ r.id }}?business_id={{ business.id }}"
                                                class="inline-flex px-3 py-2 rounded-lg bg-red-50 text-red-700 hover:bg-red-100 text-sm font-medium">
                                                 Cancel

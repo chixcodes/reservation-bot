@@ -507,7 +507,9 @@ def save_google_event_id(reservation_id, google_event_id):
     conn.close()
 
 
-def get_confirmed_reservations_for_phone(business_id, phone):
+def get_confirmed_reservations_for_phone(business, phone):
+    mark_past_reservations_done(business)
+
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
@@ -519,7 +521,7 @@ def get_confirmed_reservations_for_phone(business_id, phone):
           AND status = 'CONFIRMED'
         ORDER BY id DESC
         """,
-        (business_id, phone),
+        (business["id"], phone),
     )
     rows = c.fetchall()
     conn.close()
@@ -708,6 +710,66 @@ def normalize_booking_date(date_str):
 
     return dt.date().isoformat()
 
+def reservation_end_datetime(business, date_str, time_str, service_name):
+    tz = pytz.timezone(business.get("timezone") or "Asia/Beirut")
+
+    normalized_time = normalize_time_str(time_str)
+    if not normalized_time:
+        normalized_time = time_str
+
+    start_naive = datetime.strptime(f"{date_str} {normalized_time}", "%Y-%m-%d %H:%M")
+    start_dt = tz.localize(start_naive)
+
+    service_info = get_service_info(business["id"], service_name)
+    duration_min = int(service_info.get("duration", 45))
+
+    return start_dt + timedelta(minutes=duration_min)
+
+
+def mark_past_reservations_done(business):
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    c.execute(
+        """
+        SELECT id, date, time, service
+        FROM reservations
+        WHERE business_id = %s
+          AND status = 'CONFIRMED'
+        """,
+        (business["id"],),
+    )
+    rows = c.fetchall()
+
+    now = datetime.now(pytz.timezone(business.get("timezone") or "Asia/Beirut"))
+    ids_to_mark_done = []
+
+    for row in rows:
+        try:
+            end_dt = reservation_end_datetime(
+                business,
+                row["date"],
+                row["time"],
+                row["service"],
+            )
+            if end_dt <= now:
+                ids_to_mark_done.append(row["id"])
+        except Exception as e:
+            print("mark_past_reservations_done error on row:", row, e)
+
+    if ids_to_mark_done:
+        for reservation_id in ids_to_mark_done:
+            c.execute(
+                """
+                UPDATE reservations
+                SET status = 'DONE'
+                WHERE id = %s
+                """,
+                (reservation_id,),
+            )
+        conn.commit()
+
+    conn.close()
 
 def ensure_default_hours(business_id):
     conn = get_db_connection()
@@ -946,7 +1008,7 @@ def process_incoming_message(business, phone, text):
 
     # CANCEL BOOKING
     if is_cancel_intent(lt):
-        reservations = get_confirmed_reservations_for_phone(business["id"], phone)
+        reservations = get_confirmed_reservations_for_phone(business, phone)
 
         if not reservations:
             send_friendly_message(phone, business, lang, tr(lang, "no_active_cancel"), purpose="cancel")
@@ -1034,12 +1096,16 @@ def process_incoming_message(business, phone, text):
         )
 
         if not valid_service:
-            services_text = ", ".join(available_services) if available_services else "No services configured yet"
+            if available_services:
+                services_text = "\n".join([f"• {s}" for s in available_services])
+            else:
+                services_text = "• No services configured yet"
+
             send_friendly_message(
                 phone,
                 business,
                 lang,
-                f"Sorry, we don’t offer that service.\nAvailable services: {services_text}",
+                f"Sorry, we don’t offer that service.\nAvailable services:\n{services_text}",
                 purpose="invalid_service",
             )
             return "ok", 200
@@ -1593,7 +1659,7 @@ def dashboard():
         return f"No business with ID {business_id}", 404
 
     session["business_id"] = business_id
-
+    mark_past_reservations_done(business)
     ensure_default_hours(business_id)
 
     c.execute(

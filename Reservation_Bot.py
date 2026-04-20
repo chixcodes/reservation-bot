@@ -24,9 +24,29 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from dateutil import parser as dtparse
 import pytz
 import sys
-
+import time
 # ------------------ BUSINESS HELPERS ------------------
 
+processed_message_ids = {}
+PROCESSED_MESSAGE_TTL = 60 * 60  # 1 hour
+
+
+def is_duplicate_message(message_id):
+    now = time.time()
+
+    # cleanup old ids
+    expired = [mid for mid, ts in processed_message_ids.items() if now - ts > PROCESSED_MESSAGE_TTL]
+    for mid in expired:
+        processed_message_ids.pop(mid, None)
+
+    if not message_id:
+        return False
+
+    if message_id in processed_message_ids:
+        return True
+
+    processed_message_ids[message_id] = now
+    return False
 
 def get_business_by_phone_number_id(phone_number_id: str):
     conn = get_db_connection()
@@ -123,7 +143,7 @@ SERVICE_KEYWORDS = {
 def send_message(to: str, text: str, business: dict):
     if not business.get("phone_number_id") or not business.get("access_token"):
         print("send_message: missing phone_number_id or access_token for business")
-        return
+        return False
 
     url = f"https://graph.facebook.com/v21.0/{business['phone_number_id']}/messages"
     headers = {
@@ -141,8 +161,10 @@ def send_message(to: str, text: str, business: dict):
         r = requests.post(url, headers=headers, json=payload, timeout=15)
         print("send_message status:", r.status_code, flush=True)
         print("send_message body:", r.text, flush=True)
+        return r.ok
     except Exception as e:
         print("send_message error (meta):", e)
+        return False
 
 def ai_pick_service(business: dict, user_text: str):
     """
@@ -1173,6 +1195,15 @@ def process_incoming_message(business, phone, text):
             print("STEP 4 save error:", str(e))
             send_friendly_message(phone, business, lang, tr(lang, "save_error"), purpose="error")
             return "ok", 200
+    send_friendly_message(
+        phone,
+        business,
+        lang,
+        "I didn’t fully understand that. You can say hi, book, or cancel.",
+        purpose="fallback",
+    )
+    return "ok", 200
+
 
 def is_support_user():
     return session.get("role") == "support"
@@ -1227,6 +1258,11 @@ def webhook():
     if message.get("type") != "text":
         return "ok", 200
 
+    message_id = message.get("id")
+    if is_duplicate_message(message_id):
+        print("Duplicate message ignored:", message_id, flush=True)
+        return "ok", 200
+
     phone = message.get("from")
     text = message.get("text", {}).get("body", "").strip()
     phone_number_id = value["metadata"]["phone_number_id"]
@@ -1239,7 +1275,13 @@ def webhook():
         return "ok", 200
 
     print("Calling process_incoming_message...", flush=True)
-    return process_incoming_message(business, phone, text)
+
+    try:
+        process_incoming_message(business, phone, text)
+    except Exception as e:
+        print("process_incoming_message error:", str(e), flush=True)
+
+    return "ok", 200
 
 # ------------------ ADMIN BUSINESSES ------------------ #
 

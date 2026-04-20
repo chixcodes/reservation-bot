@@ -1735,7 +1735,7 @@ def cancel_reservation(reservation_id):
     c = conn.cursor()
     c.execute(
         """
-        SELECT customer_phone, customer_name, service, date, time, google_event_id
+        SELECT customer_phone, customer_name, service, date, time, google_event_id, status
         FROM reservations
         WHERE id = %s AND business_id = %s
         """,
@@ -1744,6 +1744,13 @@ def cancel_reservation(reservation_id):
     row = c.fetchone()
 
     if not row:
+        conn.close()
+        return redirect("/dashboard")
+
+    status = row["status"]
+
+    # If already canceled or done, do nothing
+    if status != "CONFIRMED":
         conn.close()
         return redirect("/dashboard")
 

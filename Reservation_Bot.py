@@ -1659,19 +1659,24 @@ def dashboard():
         return f"No business with ID {business_id}", 404
 
     session["business_id"] = business_id
-    mark_past_reservations_done(business)
+
     ensure_default_hours(business_id)
+
+    try:
+        mark_past_reservations_done(business)
+    except Exception as e:
+        print("dashboard mark_past_reservations_done warning:", e)
 
     c.execute(
         """
         SELECT id, customer_name, customer_phone, service, date, time, status
         FROM reservations
         WHERE business_id = %s
-        ORDER BY date, time
-        """,
+        """
+        ,
         (business_id,),
     )
-    reservations = c.fetchall()
+    all_reservations = c.fetchall()
 
     c.execute(
         """
@@ -1702,13 +1707,54 @@ def dashboard():
         SELECT id, blocked_date::text AS blocked_date, COALESCE(note, '') AS note
         FROM blocked_dates
         WHERE business_id = %s
-        ORDER BY blocked_date
+        ORDER BY blocked_date DESC
         """,
         (business_id,),
     )
     blocked_dates = c.fetchall()
 
     conn.close()
+
+    tz = pytz.timezone(business.get("timezone") or "Asia/Beirut")
+    cutoff = datetime.now(tz) - timedelta(hours=48)
+
+    visible_reservations = []
+
+    for r in all_reservations:
+        try:
+            end_dt = reservation_end_datetime(
+                business,
+                r["date"],
+                r["time"],
+                r["service"],
+            )
+
+            # keep only reservations that ended within the last 48 hours
+            # or any reservation that is still upcoming/active
+            if end_dt >= cutoff:
+                visible_reservations.append(r)
+
+        except Exception as e:
+            print("dashboard reservation filter warning:", r, e)
+            # if parsing fails, keep it visible rather than losing data
+            visible_reservations.append(r)
+
+    def reservation_sort_key(r):
+        try:
+            normalized_time = normalize_time_str(r["time"]) or r["time"]
+            dt = datetime.strptime(
+                f"{r['date']} {normalized_time}",
+                "%Y-%m-%d %H:%M"
+            )
+            return tz.localize(dt)
+        except Exception:
+            return tz.localize(datetime(2000, 1, 1, 0, 0))
+
+    reservations = sorted(
+        visible_reservations,
+        key=reservation_sort_key,
+        reverse=True
+    )
 
     return render_template(
         "dashboard.html",

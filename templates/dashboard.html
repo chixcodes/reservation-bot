@@ -54,9 +54,9 @@
             <div class="p-6 md:p-8 space-y-8">
 
                 <div id="tab-reservations" class="tab-content active">
-                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
                         <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
-                            <p class="text-sm text-slate-500">Total Reservations</p>
+                            <p class="text-sm text-slate-500">Visible Reservations</p>
                             <p class="text-3xl font-bold mt-2">{{ reservations|length }}</p>
                         </div>
                         <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
@@ -71,12 +71,18 @@
                                 {{ reservations | selectattr("status", "equalto", "CANCELED") | list | length }}
                             </p>
                         </div>
+                        <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+                            <p class="text-sm text-slate-500">Done</p>
+                            <p class="text-3xl font-bold mt-2">
+                                {{ reservations | selectattr("status", "equalto", "DONE") | list | length }}
+                            </p>
+                        </div>
                     </div>
 
                     <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
                         <div class="px-5 py-4 border-b border-slate-100">
                             <h2 class="font-semibold text-lg">Reservations</h2>
-                            <p class="text-sm text-slate-500">All bookings for this business</p>
+                            <p class="text-sm text-slate-500">Newest reservations appear first</p>
                         </div>
 
                         <div class="overflow-x-auto">
@@ -108,7 +114,7 @@
                                             {% elif r.status == "DONE" %}
                                             <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-yellow-100 text-yellow-700">Done</span>
                                             {% else %}
-                                            <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-yellow-100 text-yellow-700">{{ r.status }}</span>
+                                            <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-700">{{ r.status }}</span>
                                             {% endif %}
                                         </td>
                                         <td class="px-5 py-4 text-right">

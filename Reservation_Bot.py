@@ -369,8 +369,10 @@ def suggest_slots(
     while current + new_duration <= close_minutes:
         new_end = current + new_duration
 
-        overlaps = any(current < existing_end and existing_start < new_end
-                       for existing_start, existing_end in existing_intervals)
+        overlaps = any(
+            current < existing_end and existing_start < new_end
+            for existing_start, existing_end in existing_intervals
+        )
 
         if not overlaps:
             free_slots.append(current)

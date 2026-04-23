@@ -135,7 +135,7 @@
 
                     <!-- SEARCH / FILTER -->
                     <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm mb-6">
-                        <form method="get" action="/dashboard" class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                        <form id="reservationFilterForm" method="get" action="/dashboard" class="grid grid-cols-1 md:grid-cols-4 gap-4">
                             <input type="hidden" name="tab" value="reservations">
                             {% if is_support and business.id %}
                             <input type="hidden" name="business_id" value="{{ business.id }}">
@@ -144,6 +144,7 @@
                             <div class="md:col-span-2">
                                 <label class="block text-sm font-medium mb-2">Search</label>
                                 <input
+                                    id="reservationSearchInput"
                                     type="text"
                                     name="q"
                                     value="{{ search_query or '' }}"
@@ -155,6 +156,7 @@
                             <div>
                                 <label class="block text-sm font-medium mb-2">Status</label>
                                 <select
+                                    id="reservationStatusSelect"
                                     name="status"
                                     class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                                 >
@@ -166,7 +168,7 @@
                             </div>
 
                             <div class="flex items-end gap-3">
-                                <button class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-xl">
+                                <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-xl">
                                     Apply
                                 </button>
                                 <a href="/dashboard?tab=reservations{% if is_support and business.id %}&business_id={{ business.id }}{% endif %}"
@@ -216,7 +218,7 @@
                                                     placeholder="Add note"
                                                     class="w-40 rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                                                 >
-                                                <button class="text-xs px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium">
+                                                <button type="submit" class="text-xs px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium">
                                                     Save
                                                 </button>
                                             </form>
@@ -274,7 +276,7 @@
                                     <label class="block text-sm font-medium mb-2">Duration (minutes)</label>
                                     <input name="duration_min" type="number" required class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
                                 </div>
-                                <button class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-xl">
+                                <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-xl">
                                     Save Service
                                 </button>
                             </form>
@@ -293,7 +295,7 @@
                                     </div>
 
                                     <form method="post" action="/services/delete/{{ s.id }}" class="mt-6">
-                                        <button class="text-red-600 hover:text-red-700 text-sm font-medium">
+                                        <button type="submit" class="text-red-600 hover:text-red-700 text-sm font-medium">
                                             Delete
                                         </button>
                                     </form>
@@ -311,6 +313,7 @@
                 <!-- SETTINGS TAB -->
                 <div id="tab-settings" class="tab-content">
                     <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+
                         <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
                             <h2 class="text-lg font-semibold mb-4">Business Profile</h2>
                             <form method="post" action="/settings/update" class="space-y-4">
@@ -318,11 +321,43 @@
                                     <label class="block text-sm font-medium mb-2">Business Name</label>
                                     <input name="business_name" value="{{ business.name }}" required class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
                                 </div>
+
                                 <div>
                                     <label class="block text-sm font-medium mb-2">Timezone</label>
                                     <input name="timezone" value="{{ business.timezone or 'Asia/Beirut' }}" required class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
                                 </div>
-                                <button class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-5 rounded-xl">
+
+                                <div>
+                                    <label class="block text-sm font-medium mb-2">Preferred Language</label>
+                                    <select name="preferred_language" class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                        <option value="auto" {% if business.preferred_language =="auto" %}selected{% endif %}>Auto</option>
+                                        <option value="en" {% if business.preferred_language =="en" %}selected{% endif %}>English</option>
+                                        <option value="ar" {% if business.preferred_language =="ar" %}selected{% endif %}>Arabic</option>
+                                        <option value="fr" {% if business.preferred_language =="fr" %}selected{% endif %}>French</option>
+                                    </select>
+                                </div>
+
+                                <div>
+                                    <label class="block text-sm font-medium mb-2">Assistant Tone</label>
+                                    <select name="assistant_tone" class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                        <option value="friendly" {% if business.assistant_tone =="friendly" %}selected{% endif %}>Friendly</option>
+                                        <option value="professional" {% if business.assistant_tone =="professional" %}selected{% endif %}>Professional</option>
+                                        <option value="warm" {% if business.assistant_tone =="warm" %}selected{% endif %}>Warm</option>
+                                        <option value="luxury" {% if business.assistant_tone =="luxury" %}selected{% endif %}>Luxury</option>
+                                    </select>
+                                </div>
+
+                                <div>
+                                    <label class="block text-sm font-medium mb-2">Custom Welcome Message</label>
+                                    <textarea name="custom_welcome_message" rows="4" class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">{{ business.custom_welcome_message or '' }}</textarea>
+                                </div>
+
+                                <div>
+                                    <label class="block text-sm font-medium mb-2">Business Description</label>
+                                    <textarea name="business_description" rows="4" class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">{{ business.business_description or '' }}</textarea>
+                                </div>
+
+                                <button type="submit" class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-5 rounded-xl">
                                     Save Business Info
                                 </button>
                             </form>
@@ -367,16 +402,14 @@
                                         </label>
                                     </div>
                                     <div class="col-span-3">
-                                        <input type="time" name="open_{{ h.weekday }}" value="{{ h.open_time or '' }}"
-                                               class="w-full rounded-lg border border-slate-300 px-3 py-2">
+                                        <input type="time" name="open_{{ h.weekday }}" value="{{ h.open_time or '' }}" class="w-full rounded-lg border border-slate-300 px-3 py-2">
                                     </div>
                                     <div class="col-span-3">
-                                        <input type="time" name="close_{{ h.weekday }}" value="{{ h.close_time or '' }}"
-                                               class="w-full rounded-lg border border-slate-300 px-3 py-2">
+                                        <input type="time" name="close_{{ h.weekday }}" value="{{ h.close_time or '' }}" class="w-full rounded-lg border border-slate-300 px-3 py-2">
                                     </div>
                                 </div>
                                 {% endfor %}
-                                <button class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-5 rounded-xl">
+                                <button type="submit" class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-5 rounded-xl">
                                     Save Weekly Schedule
                                 </button>
                             </form>
@@ -386,11 +419,9 @@
                             <h2 class="text-lg font-semibold mb-4">Blocked Dates</h2>
 
                             <form method="post" action="/availability/add-blocked-date" class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-                                <input type="date" name="blocked_date" required
-                                       class="rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                                <input type="text" name="note" placeholder="Reason (optional)"
-                                       class="rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                                <button class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-5 rounded-xl">
+                                <input type="date" name="blocked_date" required class="rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                <input type="text" name="note" placeholder="Reason (optional)" class="rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                <button type="submit" class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-5 rounded-xl">
                                     Add Blocked Date
                                 </button>
                             </form>
@@ -405,7 +436,7 @@
                                         {% endif %}
                                     </div>
                                     <form method="post" action="/availability/delete-blocked-date/{{ b.id }}">
-                                        <button class="text-red-600 hover:text-red-700 text-sm font-medium">
+                                        <button type="submit" class="text-red-600 hover:text-red-700 text-sm font-medium">
                                             Remove
                                         </button>
                                     </form>
@@ -415,6 +446,7 @@
                                 {% endfor %}
                             </div>
                         </div>
+
                     </div>
                 </div>
 
@@ -449,6 +481,24 @@
         }
 
         switchTab("{{ active_tab }}");
+
+        const reservationSearchInput = document.getElementById("reservationSearchInput");
+        const reservationStatusSelect = document.getElementById("reservationStatusSelect");
+        const reservationFilterForm = document.getElementById("reservationFilterForm");
+
+        if (reservationSearchInput && reservationStatusSelect && reservationFilterForm) {
+            reservationSearchInput.addEventListener("input", function () {
+                if (reservationSearchInput.value.trim() === "" && reservationStatusSelect.value === "ALL") {
+                    reservationFilterForm.submit();
+                }
+            });
+
+            reservationStatusSelect.addEventListener("change", function () {
+                if (reservationSearchInput.value.trim() === "" && reservationStatusSelect.value === "ALL") {
+                    reservationFilterForm.submit();
+                }
+            });
+        }
     </script>
 </body>
 </html>

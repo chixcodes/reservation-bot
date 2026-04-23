@@ -563,6 +563,25 @@ def detect_lang(text):
 
     return "en"
 
+def is_greeting(text):
+    t = (text or "").strip().lower()
+
+    greeting_keywords = [
+        "hi", "hello", "hey", "hola", "bonjour", "salut",
+        "مرحبا", "اهلا", "أهلا", "سلام",
+        "kifak", "kifik"
+    ]
+
+    # exact or contains
+    if any(g in t for g in greeting_keywords):
+        return True
+
+    # stretched greetings like helloo / hiiii / heyyy
+    if t.startswith("hel") or t.startswith("hii") or t.startswith("hey"):
+        return True
+
+    return False
+
 def get_business_greeting(business, lang):
     custom = (business.get("custom_welcome_message") or "").strip()
     if custom:
@@ -996,12 +1015,7 @@ def process_incoming_message(business, phone, text):
     lang = state.get("lang") if state and state.get("lang") else detect_lang(t)
 
     # GREETING
-    if lt in [
-        "hi", "hello", "hey", "hii", "heyy", "hola",
-        "bonjour", "salut",
-        "مرحبا", "اهلا", "أهلا", "سلام",
-        "hi kifak", "hi kifik", "kifak", "kifik"
-    ]:
+    if is_greeting(t):
         send_friendly_message(
             phone,
             business,

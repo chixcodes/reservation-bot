@@ -53,6 +53,7 @@
 
             <div class="p-6 md:p-8 space-y-8">
 
+                <!-- RESERVATIONS TAB -->
                 <div id="tab-reservations" class="tab-content active">
                     <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-4 mb-6">
                         <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
@@ -96,6 +97,7 @@
                         </div>
                     </div>
 
+                    <!-- TODAY'S SCHEDULE -->
                     <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden mb-6">
                         <div class="px-5 py-4 border-b border-slate-100">
                             <h2 class="font-semibold text-lg">Today’s Schedule</h2>
@@ -110,7 +112,6 @@
                                     <p class="font-semibold text-slate-900">{{ r.time }} — {{ r.customer_name }}</p>
                                     <p class="text-sm text-slate-500">{{ r.service }} • {{ r.customer_phone }}</p>
                                 </div>
-
                                 <div>
                                     {% if r.status == "CONFIRMED" %}
                                     <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-700">
@@ -132,6 +133,51 @@
                         {% endif %}
                     </div>
 
+                    <!-- SEARCH / FILTER -->
+                    <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm mb-6">
+                        <form method="get" action="/dashboard" class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                            <input type="hidden" name="tab" value="reservations">
+                            {% if is_support and business.id %}
+                            <input type="hidden" name="business_id" value="{{ business.id }}">
+                            {% endif %}
+
+                            <div class="md:col-span-2">
+                                <label class="block text-sm font-medium mb-2">Search</label>
+                                <input
+                                    type="text"
+                                    name="q"
+                                    value="{{ search_query or '' }}"
+                                    placeholder="Customer name, phone, or service"
+                                    class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                >
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium mb-2">Status</label>
+                                <select
+                                    name="status"
+                                    class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                >
+                                    <option value="ALL" {% if status_filter =="ALL" %}selected{% endif %}>All</option>
+                                    <option value="CONFIRMED" {% if status_filter =="CONFIRMED" %}selected{% endif %}>Confirmed</option>
+                                    <option value="CANCELED" {% if status_filter =="CANCELED" %}selected{% endif %}>Canceled</option>
+                                    <option value="DONE" {% if status_filter =="DONE" %}selected{% endif %}>Done</option>
+                                </select>
+                            </div>
+
+                            <div class="flex items-end gap-3">
+                                <button class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-xl">
+                                    Apply
+                                </button>
+                                <a href="/dashboard?tab=reservations{% if is_support and business.id %}&business_id={{ business.id }}{% endif %}"
+                                   class="w-full text-center bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold py-3 rounded-xl">
+                                    Reset
+                                </a>
+                            </div>
+                        </form>
+                    </div>
+
+                    <!-- RESERVATIONS TABLE -->
                     <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
                         <div class="px-5 py-4 border-b border-slate-100">
                             <h2 class="font-semibold text-lg">Reservations</h2>
@@ -147,6 +193,7 @@
                                         <th class="px-5 py-4">Service</th>
                                         <th class="px-5 py-4">Date</th>
                                         <th class="px-5 py-4">Time</th>
+                                        <th class="px-5 py-4">Notes</th>
                                         <th class="px-5 py-4">Status</th>
                                         <th class="px-5 py-4 text-right">Action</th>
                                     </tr>
@@ -159,6 +206,22 @@
                                         <td class="px-5 py-4">{{ r.service }}</td>
                                         <td class="px-5 py-4">{{ r.date }}</td>
                                         <td class="px-5 py-4">{{ r.time }}</td>
+
+                                        <td class="px-5 py-4">
+                                            <form method="post" action="/reservations/update-note/{{ r.id }}" class="flex gap-2">
+                                                <input
+                                                    type="text"
+                                                    name="note"
+                                                    value="{{ r.notes or '' }}"
+                                                    placeholder="Add note"
+                                                    class="w-40 rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                                >
+                                                <button class="text-xs px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium">
+                                                    Save
+                                                </button>
+                                            </form>
+                                        </td>
+
                                         <td class="px-5 py-4">
                                             {% if r.status == "CONFIRMED" %}
                                             <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-700">Confirmed</span>
@@ -170,6 +233,7 @@
                                             <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-700">{{ r.status }}</span>
                                             {% endif %}
                                         </td>
+
                                         <td class="px-5 py-4 text-right">
                                             {% if r.status == "CONFIRMED" %}
                                             <a href="/cancel/{{ r.id }}?business_id={{ business.id }}"
@@ -181,7 +245,7 @@
                                     </tr>
                                     {% else %}
                                     <tr>
-                                        <td colspan="7" class="px-5 py-12 text-center text-slate-500">
+                                        <td colspan="8" class="px-5 py-12 text-center text-slate-500">
                                             No reservations yet.
                                         </td>
                                     </tr>
@@ -192,6 +256,7 @@
                     </div>
                 </div>
 
+                <!-- SERVICES TAB -->
                 <div id="tab-services" class="tab-content">
                     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
                         <div class="lg:col-span-1 bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
@@ -243,9 +308,9 @@
                     </div>
                 </div>
 
+                <!-- SETTINGS TAB -->
                 <div id="tab-settings" class="tab-content">
                     <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
-
                         <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
                             <h2 class="text-lg font-semibold mb-4">Business Profile</h2>
                             <form method="post" action="/settings/update" class="space-y-4">
@@ -350,7 +415,6 @@
                                 {% endfor %}
                             </div>
                         </div>
-
                     </div>
                 </div>
 

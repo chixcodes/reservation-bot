@@ -101,7 +101,10 @@ def init_db():
         ALTER TABLE users
         ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'business';
     """)
-
+    c.execute("""
+        ALTER TABLE reservations
+        ADD COLUMN IF NOT EXISTS notes TEXT;
+    """)
     c.execute("""
         ALTER TABLE reservations
         ADD COLUMN IF NOT EXISTS google_event_id VARCHAR(255);

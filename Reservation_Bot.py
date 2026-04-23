@@ -1674,11 +1674,10 @@ def dashboard():
 
     c.execute(
         """
-        SELECT id, customer_name, customer_phone, service, date, time, status
+        SELECT id, customer_name, customer_phone, service, date, time, status, notes
         FROM reservations
         WHERE business_id = %s
-        """
-        ,
+        """,
         (business_id,),
     )
     all_reservations = c.fetchall()
@@ -1733,15 +1732,10 @@ def dashboard():
                 r["time"],
                 r["service"],
             )
-
-            # keep only reservations that ended within the last 48 hours
-            # or any reservation that is still upcoming/active
             if end_dt >= cutoff:
                 visible_reservations.append(r)
-
         except Exception as e:
             print("dashboard reservation filter warning:", r, e)
-            # if parsing fails, keep it visible rather than losing data
             visible_reservations.append(r)
 
     def reservation_sort_key(r):
@@ -1760,20 +1754,38 @@ def dashboard():
         key=reservation_sort_key,
         reverse=True
     )
+
     dashboard_metrics = calculate_dashboard_metrics(business, all_reservations)
 
-    tz = pytz.timezone(business.get("timezone") or "Asia/Beirut")
     today_iso = datetime.now(tz).date().isoformat()
-
     today_reservations = [
         r for r in reservations
         if r["date"] == today_iso and r["status"] in ["CONFIRMED", "DONE"]
     ]
 
+    search_query = (request.args.get("q") or "").strip().lower()
+    status_filter = (request.args.get("status") or "").strip().upper()
+
+    filtered_reservations = reservations
+
+    if search_query:
+        filtered_reservations = [
+            r for r in filtered_reservations
+            if search_query in (r.get("customer_name") or "").lower()
+            or search_query in (r.get("customer_phone") or "").lower()
+            or search_query in (r.get("service") or "").lower()
+        ]
+
+    if status_filter and status_filter != "ALL":
+        filtered_reservations = [
+            r for r in filtered_reservations
+            if (r.get("status") or "").upper() == status_filter
+        ]
+
     return render_template(
         "dashboard.html",
         business=business,
-        reservations=reservations,
+        reservations=filtered_reservations,
         services=services,
         hours=hours,
         blocked_dates=blocked_dates,
@@ -1784,6 +1796,8 @@ def dashboard():
         is_support=is_support_user(),
         dashboard_metrics=dashboard_metrics,
         today_reservations=today_reservations,
+        search_query=search_query,
+        status_filter=status_filter or "ALL",
     )
 
 @app.route("/cancel/<int:reservation_id>")
@@ -1962,6 +1976,29 @@ def update_hours():
     conn.close()
 
     return redirect("/dashboard?tab=settings")
+
+@app.route("/reservations/update-note/<int:reservation_id>", methods=["POST"])
+def update_reservation_note(reservation_id):
+    if "business_id" not in session:
+        return redirect("/login")
+
+    business_id = session["business_id"]
+    note = (request.form.get("note") or "").strip()
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        UPDATE reservations
+        SET notes = %s
+        WHERE id = %s AND business_id = %s
+        """,
+        (note, reservation_id, business_id),
+    )
+    conn.commit()
+    conn.close()
+
+    return redirect("/dashboard?tab=reservations")
 
 
 @app.route("/availability/add-blocked-date", methods=["POST"])

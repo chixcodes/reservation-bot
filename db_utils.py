@@ -109,6 +109,25 @@ def init_db():
         ALTER TABLE reservations
         ADD COLUMN IF NOT EXISTS google_event_id VARCHAR(255);
     """)
+    c.execute("""
+        ALTER TABLE businesses
+        ADD COLUMN IF NOT EXISTS preferred_language VARCHAR(20) DEFAULT 'auto';
+    """)
+
+    c.execute("""
+        ALTER TABLE businesses
+        ADD COLUMN IF NOT EXISTS assistant_tone VARCHAR(50) DEFAULT 'friendly';
+    """)
+
+    c.execute("""
+        ALTER TABLE businesses
+        ADD COLUMN IF NOT EXISTS custom_welcome_message TEXT;
+    """)
+
+    c.execute("""
+        ALTER TABLE businesses
+        ADD COLUMN IF NOT EXISTS business_description TEXT;
+    """)
 
     conn.commit()
     conn.close()

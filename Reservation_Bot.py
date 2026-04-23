@@ -563,6 +563,11 @@ def detect_lang(text):
 
     return "en"
 
+def get_business_greeting(business, lang):
+    custom = (business.get("custom_welcome_message") or "").strip()
+    if custom:
+        return custom
+    return tr(lang, "greeting")
 
 def is_booking_intent(text):
     t = (text or "").strip().lower()
@@ -997,7 +1002,13 @@ def process_incoming_message(business, phone, text):
         "مرحبا", "اهلا", "أهلا", "سلام",
         "hi kifak", "hi kifik", "kifak", "kifik"
     ]:
-        send_friendly_message(phone, business, lang, tr(lang, "greeting"), purpose="greeting")
+        send_friendly_message(
+            phone,
+            business,
+            lang,
+            get_business_greeting(business, lang),
+            purpose="greeting",
+        )
         return "ok", 200
 
     # START BOOKING
@@ -1873,18 +1884,37 @@ def update_business_settings():
         return redirect("/login")
 
     business_id = session["business_id"]
+
     business_name = request.form.get("business_name", "").strip()
     timezone = request.form.get("timezone", "Asia/Beirut").strip() or "Asia/Beirut"
+
+    preferred_language = request.form.get("preferred_language", "auto").strip() or "auto"
+    assistant_tone = request.form.get("assistant_tone", "friendly").strip() or "friendly"
+    custom_welcome_message = request.form.get("custom_welcome_message", "").strip()
+    business_description = request.form.get("business_description", "").strip()
 
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
         """
         UPDATE businesses
-        SET name = %s, timezone = %s
+        SET name = %s,
+            timezone = %s,
+            preferred_language = %s,
+            assistant_tone = %s,
+            custom_welcome_message = %s,
+            business_description = %s
         WHERE id = %s
         """,
-        (business_name, timezone, business_id),
+        (
+            business_name,
+            timezone,
+            preferred_language,
+            assistant_tone,
+            custom_welcome_message,
+            business_description,
+            business_id,
+        ),
     )
     conn.commit()
     conn.close()

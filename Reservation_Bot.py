@@ -541,6 +541,16 @@ def save_google_event_id(reservation_id, google_event_id):
     conn.commit()
     conn.close()
 
+def apply_tone_to_text(business, text):
+    tone = (business.get("assistant_tone") or "friendly").strip().lower()
+
+    if tone == "professional":
+        return text.replace("🤍", "").replace("👋", "")
+    elif tone == "warm":
+        return text.replace("Hi!", "Hello!").replace("Sure", "Of course")
+    elif tone == "luxury":
+        return text.replace("Hi!", "Welcome.").replace("Sure", "Certainly")
+    return text
 
 def get_confirmed_reservations_for_phone(business, phone):
     mark_past_reservations_done(business)
@@ -912,60 +922,11 @@ def is_time_within_business_hours(time_str, open_time, close_time):
     return start <= chosen <= end
 
 def humanize_reply(lang, fallback_text, purpose="general"):
-    if not OPENROUTER_API_KEY or not OPENROUTER_API_KEY.startswith("sk-or-"):
-        return fallback_text
-
-    system_msg = (
-        "You rewrite booking assistant messages to sound warm, human, short, and natural. "
-        "Do not change the meaning. "
-        "Do not invent details. "
-        "Do not add extra steps unless the original text asks a question. "
-        "Keep dates, times, prices, and service names exactly as given. "
-        "Reply in the same language as the user message language code provided."
-    )
-
-    user_msg = (
-        f"Language: {lang}\n"
-        f"Purpose: {purpose}\n"
-        f"Original message:\n{fallback_text}\n\n"
-        "Rewrite it in a friendlier way. Return plain text only."
-    )
-
-    try:
-        resp = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://api.ezrezerve.com",
-                "X-Title": "EzReserve",
-            },
-            json={
-                "model": OPENROUTER_MODEL,
-                "messages": [
-                    {"role": "system", "content": system_msg},
-                    {"role": "user", "content": user_msg},
-                ],
-                "temperature": 0.5,
-            },
-            timeout=10,
-        )
-
-        if not resp.ok:
-            print("humanize_reply status:", resp.status_code)
-            print("humanize_reply body:", resp.text)
-            return fallback_text
-
-        data = resp.json()
-        content = data["choices"][0]["message"]["content"].strip()
-        return content or fallback_text
-
-    except Exception as e:
-        print("humanize_reply error:", e)
-        return fallback_text
+    return fallback_text
 
 def send_friendly_message(phone, business, lang, text, purpose="general"):
-    final_text = humanize_reply(lang, text, purpose=purpose)
+    toned_text = apply_tone_to_text(business, text)
+    final_text = humanize_reply(lang, toned_text, purpose=purpose)
     send_message(phone, final_text, business)
 
 import re

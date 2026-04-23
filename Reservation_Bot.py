@@ -323,39 +323,72 @@ def suggest_slots(
     step_min=15,
     max_suggestions=3,
 ):
-    norm_req = normalize_time_str_with_hours(requested_time_str, open_start, open_end)
-    if norm_req is None:
-        norm_req = open_start
+    requested_norm = normalize_time_str_with_hours(
+        requested_time_str,
+        open_start,
+        open_end,
+    ) or open_start
 
-    req_time = datetime.strptime(norm_req, "%H:%M").time()
-    start = datetime.strptime(open_start, "%H:%M").time()
-    end = datetime.strptime(open_end, "%H:%M").time()
+    requested_minutes = time_to_minutes(requested_norm)
+    open_minutes = time_to_minutes(open_start)
+    close_minutes = time_to_minutes(open_end)
 
-    base = datetime.combine(datetime.today(), start)
-    end_dt = datetime.combine(datetime.today(), end)
+    new_duration = int(get_service_info(business_id, service_name).get("duration", 45))
 
-    slots = []
-    while base <= end_dt:
-        slots.append(base.time())
-        base += timedelta(minutes=step_min)
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT service, time
+        FROM reservations
+        WHERE business_id = %s
+          AND date = %s
+          AND status = 'CONFIRMED'
+        """,
+        (business_id, date_iso),
+    )
+    rows = c.fetchall()
+    conn.close()
 
-    free = []
-    for t in slots:
-        hhmm = f"{t.hour:02d}:{t.minute:02d}"
-
-        if not is_time_within_business_hours(hhmm, open_start, open_end):
+    existing_intervals = []
+    for row in rows:
+        existing_time = normalize_time_str(row["time"])
+        if not existing_time:
             continue
 
-        if not is_slot_taken(business_id, date_iso, hhmm, service_name):
-            free.append(t)
+        existing_start = time_to_minutes(existing_time)
+        existing_duration = int(
+            get_service_info(business_id, row["service"]).get("duration", 45)
+        )
+        existing_end = existing_start + existing_duration
+        existing_intervals.append((existing_start, existing_end))
 
-    def minutes(t):
-        return t.hour * 60 + t.minute
+    free_slots = []
+    current = open_minutes
 
-    target = minutes(req_time)
-    free.sort(key=lambda t: abs(minutes(t) - target))
+    while current + new_duration <= close_minutes:
+        new_end = current + new_duration
 
-    return [f"{t.hour:02d}:{t.minute:02d}" for t in free[:max_suggestions]]
+        overlaps = any(current < existing_end and existing_start < new_end
+                       for existing_start, existing_end in existing_intervals)
+
+        if not overlaps:
+            free_slots.append(current)
+
+        current += step_min
+
+    later_slots = [m for m in free_slots if m >= requested_minutes]
+    earlier_slots = [m for m in free_slots if m < requested_minutes]
+
+    selected = later_slots[:max_suggestions]
+
+    if len(selected) < max_suggestions:
+        needed = max_suggestions - len(selected)
+        selected += earlier_slots[-needed:]
+
+    selected = sorted(selected)
+
+    return [f"{m // 60:02d}:{m % 60:02d}" for m in selected]
 
 
 def save_reservation(business_id, phone, name, service, date, time_):
@@ -995,11 +1028,40 @@ def normalize_time_str_with_hours(time_input, open_time=None, close_time=None):
 
 def validate_service_for_business(business_id, service_name):
     services = get_service_names_for_business(business_id)
-    services_lower = {s.lower(): s for s in services}
+    cleaned = (service_name or "").strip().lower()
 
-    exact = services_lower.get(service_name.strip().lower())
-    if exact:
-        return exact, services
+    if not services:
+        return None, services
+
+    # Exact match first
+    services_map = {s.strip().lower(): s for s in services}
+    if cleaned in services_map:
+        return services_map[cleaned], services
+
+    # Partial match
+    for s in services:
+        s_norm = s.strip().lower()
+        if cleaned in s_norm or s_norm in cleaned:
+            return s, services
+
+    # Alias-based fallback
+    aliases = {
+        "beard": "beard",
+        "beard trim": "beard",
+        "shave": "beard",
+        "haircut": "hair",
+        "cut": "hair",
+        "hair": "hair",
+        "pedicure": "pedicure",
+        "manicure": "manicure",
+    }
+
+    wanted = aliases.get(cleaned)
+    if wanted:
+        for s in services:
+            s_norm = s.strip().lower()
+            if wanted in s_norm:
+                return s, services
 
     return None, services
 
@@ -1227,17 +1289,21 @@ def process_incoming_message(business, phone, text):
             )
 
             if suggestions:
-                suggestions_text = ", ".join(suggestions)
-                send_message(
+                suggestions_text = "\n".join([f"• {s}" for s in suggestions])
+                send_friendly_message(
                     phone,
-                    f"Sorry, {state['date']} at {time_} is already booked.\nClosest available times: {suggestions_text}",
                     business,
+                    lang,
+                    f"Sorry, {state['date']} at {time_} is already booked.\nClosest available times:\n{suggestions_text}",
+                    purpose="slot_taken",
                 )
             else:
-                send_message(
+                send_friendly_message(
                     phone,
-                    f"Sorry, {state['date']} at {time_} is already booked and there are no nearby available times.",
                     business,
+                    lang,
+                    f"Sorry, {state['date']} at {time_} is already booked and there are no nearby available times.",
+                    purpose="slot_taken",
                 )
             return "ok", 200
 

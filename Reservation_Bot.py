@@ -1270,6 +1270,29 @@ def process_incoming_message(business, phone, text):
     )
     return "ok", 200
 
+def calculate_dashboard_metrics(business, reservations):
+    tz = pytz.timezone(business.get("timezone") or "Asia/Beirut")
+    today_iso = datetime.now(tz).date().isoformat()
+
+    metrics = {
+        "today_booked_revenue": 0.0,
+        "today_done_revenue": 0.0,
+    }
+
+    for r in reservations:
+        if r["date"] != today_iso:
+            continue
+
+        service_info = get_service_info(business["id"], r["service"])
+        price = float(service_info.get("price", 0) or 0)
+
+        if r["status"] == "CONFIRMED":
+            metrics["today_booked_revenue"] += price
+        elif r["status"] == "DONE":
+            metrics["today_done_revenue"] += price
+
+    return metrics
+
 
 def is_support_user():
     return session.get("role") == "support"
@@ -1755,7 +1778,7 @@ def dashboard():
         key=reservation_sort_key,
         reverse=True
     )
-
+    dashboard_metrics = calculate_dashboard_metrics(business, all_reservations)
     return render_template(
         "dashboard.html",
         business=business,
@@ -1768,6 +1791,7 @@ def dashboard():
         google_calendar_connected=bool(business.get("gcal_credentials")),
         whatsapp_connected=bool(business.get("access_token")),
         is_support=is_support_user(),
+        dashboard_metrics=dashboard_metrics,
     )
 
 @app.route("/cancel/<int:reservation_id>")

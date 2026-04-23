@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EzReserve | Support Business Picker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-50 min-h-screen text-slate-800">
+    <div class="min-h-screen">
+        <header class="bg-white border-b border-slate-200 px-6 md:px-8 py-5 flex items-center justify-between">
+            <div>
+                <h1 class="text-2xl font-bold">Support Business Picker</h1>
+                <p class="text-sm text-slate-500 mt-1">Choose a business dashboard to open and support</p>
+            </div>
+            <div class="flex items-center gap-3">
+                <a href="/dashboard"
+                   class="inline-flex px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700">
+                    Back to Dashboard
+                </a>
+                <a href="/logout"
+                   class="inline-flex px-4 py-2 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800">
+                    Logout
+                </a>
+            </div>
+        </header>
+
+        <main class="p-6 md:p-8 space-y-8">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+                    <p class="text-sm text-slate-500">Total Businesses</p>
+                    <p class="text-3xl font-bold mt-2">{{ total_businesses }}</p>
+                </div>
+                <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+                    <p class="text-sm text-slate-500">WhatsApp Active</p>
+                    <p class="text-3xl font-bold mt-2">{{ whatsapp_active }}</p>
+                </div>
+                <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+                    <p class="text-sm text-slate-500">Calendar Connected</p>
+                    <p class="text-3xl font-bold mt-2">{{ calendar_connected }}</p>
+                </div>
+            </div>
+
+            <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+                <form method="get" action="/admin/businesses" class="flex flex-col md:flex-row gap-3">
+                    <input
+                        type="text"
+                        name="q"
+                        value="{{ search }}"
+                        placeholder="Search by business name, provider, or ID"
+                        class="flex-1 rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    >
+                    <button class="px-5 py-3 rounded-xl bg-indigo-600 text-white font-medium hover:bg-indigo-700">
+                        Search
+                    </button>
+                    <a href="/admin/businesses"
+                       class="px-5 py-3 rounded-xl bg-slate-100 text-slate-700 font-medium hover:bg-slate-200 text-center">
+                        Reset
+                    </a>
+                </form>
+            </div>
+
+            <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+                <h2 class="text-lg font-semibold mb-4">Businesses</h2>
+
+                {% if businesses %}
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                    {% for b in businesses %}
+                    <div class="rounded-2xl border border-slate-200 p-5 hover:shadow-md transition bg-slate-50">
+                        <div class="flex items-start justify-between gap-4">
+                            <div>
+                                <p class="text-lg font-semibold">{{ b.name }}</p>
+                                <p class="text-sm text-slate-500 mt-1">Business ID: {{ b.id }}</p>
+                            </div>
+                            <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-slate-200 text-slate-700 uppercase">
+                                {{ b.provider }}
+                            </span>
+                        </div>
+
+                        <div class="mt-4 space-y-2 text-sm text-slate-600">
+                            <p><span class="font-medium text-slate-700">Phone Number ID:</span> {{ b.phone_number_id }}</p>
+                            <p><span class="font-medium text-slate-700">Timezone:</span> {{ b.timezone }}</p>
+                        </div>
+
+                        <div class="mt-4 flex flex-wrap gap-2">
+                            {% if b.access_token %}
+                            <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-700">
+                                WhatsApp Active
+                            </span>
+                            {% else %}
+                            <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-600">
+                                WhatsApp Missing
+                            </span>
+                            {% endif %}
+
+                            {% if b.gcal_credentials %}
+                            <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-700">
+                                Calendar Connected
+                            </span>
+                            {% else %}
+                            <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-600">
+                                Calendar Missing
+                            </span>
+                            {% endif %}
+                        </div>
+
+                        <div class="mt-5 flex flex-wrap gap-3">
+                            <a href="/dashboard?business_id={{ b.id }}"
+                               class="inline-flex px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700">
+                                Open Dashboard
+                            </a>
+                            <a href="/admin/{{ b.id }}/services"
+                               class="inline-flex px-4 py-2 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800">
+                                Manage Services
+                            </a>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <p class="text-slate-500">No businesses found.</p>
+                {% endif %}
+            </div>
+
+            <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+                <h2 class="text-lg font-semibold mb-4">Add New Business</h2>
+
+                <form method="post" action="/admin/businesses" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Business Name</label>
+                        <input name="name" required
+                               class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Provider</label>
+                        <select name="provider"
+                                class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                            <option value="meta">Meta Cloud API</option>
+                            <option value="360dialog">360dialog</option>
+                        </select>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Phone Number ID</label>
+                        <input name="phone_number_id" required
+                               class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Access Token</label>
+                        <input name="access_token" required
+                               class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Calendar ID</label>
+                        <input name="calendar_id" value="primary"
+                               class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium mb-2">Timezone</label>
+                        <input name="timezone" value="Asia/Beirut"
+                               class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    </div>
+
+                    <div class="md:col-span-2">
+                        <button class="px-5 py-3 rounded-xl bg-indigo-600 text-white font-medium hover:bg-indigo-700">
+                            Save Business
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </main>
+    </div>
+</body>
+</html>

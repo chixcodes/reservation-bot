@@ -1381,16 +1381,17 @@ from flask import render_template_string, request  # make sure this is imported 
 def admin_businesses():
     if not require_support():
         return redirect("/login")
+
     conn = get_db_connection()
     c = conn.cursor()
 
     if request.method == "POST":
-        name            = request.form.get("name", "").strip()
-        provider        = request.form.get("provider", "meta").strip().lower()
+        name = request.form.get("name", "").strip()
+        provider = request.form.get("provider", "meta").strip().lower()
         phone_number_id = request.form.get("phone_number_id", "").strip()
-        access_token    = request.form.get("access_token", "").strip()
-        calendar_id     = request.form.get("calendar_id", "primary").strip()
-        timezone        = request.form.get("timezone", "Asia/Beirut").strip()
+        access_token = request.form.get("access_token", "").strip()
+        calendar_id = request.form.get("calendar_id", "primary").strip()
+        timezone = request.form.get("timezone", "Asia/Beirut").strip()
 
         if name and phone_number_id and access_token:
             c.execute(
@@ -1408,67 +1409,48 @@ def admin_businesses():
             )
             conn.commit()
 
-    # Load all businesses
-    c.execute(
-        "SELECT id, name, provider, phone_number_id, timezone FROM businesses ORDER BY id"
-    )
+        conn.close()
+        return redirect("/admin/businesses")
+
+    search = request.args.get("q", "").strip()
+
+    if search:
+        like = f"%{search.lower()}%"
+        c.execute(
+            """
+            SELECT id, name, provider, phone_number_id, timezone, access_token, gcal_credentials
+            FROM businesses
+            WHERE lower(name) LIKE %s
+               OR CAST(id AS TEXT) LIKE %s
+               OR lower(provider) LIKE %s
+            ORDER BY id DESC
+            """,
+            (like, like, like),
+        )
+    else:
+        c.execute(
+            """
+            SELECT id, name, provider, phone_number_id, timezone, access_token, gcal_credentials
+            FROM businesses
+            ORDER BY id DESC
+            """
+        )
+
     businesses = c.fetchall()
     conn.close()
 
-    html = """
-    <h1>Admin — Businesses</h1>
+    total_businesses = len(businesses)
+    whatsapp_active = sum(1 for b in businesses if b.get("access_token"))
+    calendar_connected = sum(1 for b in businesses if b.get("gcal_credentials"))
 
-    <h2>Existing businesses</h2>
-    {% if businesses %}
-    <table border="1" cellpadding="6">
-      <tr>
-        <th>ID</th>
-        <th>Name</th>
-        <th>Provider</th>
-        <th>Phone Number ID</th>
-        <th>Timezone</th>
-        <th>Services</th>
-        <th>Dashboard</th>
-      </tr>
-      {% for b in businesses %}
-      <tr>
-        <td>{{ b.id }}</td>
-        <td>{{ b.name }}</td>
-        <td>{{ b.provider }}</td>
-        <td>{{ b.phone_number_id }}</td>
-        <td>{{ b.timezone }}</td>
-        <td><a href="/admin/{{ b.id }}/services">Manage services</a></td>
-        <!-- 🔥 This link is EXACTLY the one that works when you paste it -->
-        <td><a href="/dashboard?business_id={{ b.id }}">Open dashboard</a></td>
-      </tr>
-      {% endfor %}
-    </table>
-    {% else %}
-    <p>No businesses yet.</p>
-    {% endif %}
-
-    <h2 style="margin-top:30px;">Add new business</h2>
-    <form method="post">
-      <p>Name: <input name="name" required></p>
-
-      <p>
-        Provider:
-        <select name="provider">
-          <option value="meta">Meta Cloud API</option>
-          <option value="360dialog">360dialog</option>
-        </select>
-      </p>
-
-      <p>Phone Number ID (Meta only): <input name="phone_number_id"></p>
-      <p>Access Token (Meta only): <input name="access_token" style="width:400px;"></p>
-
-      <p>Calendar ID: <input name="calendar_id" value="primary"></p>
-      <p>Timezone: <input name="timezone" value="Asia/Beirut"></p>
-
-      <p><button type="submit">Add business</button></p>
-    </form>
-    """
-    return render_template_string(html, businesses=businesses)
+    return render_template(
+        "admin_businesses.html",
+        businesses=businesses,
+        search=search,
+        total_businesses=total_businesses,
+        whatsapp_active=whatsapp_active,
+        calendar_connected=calendar_connected,
+    )
 
 
 # ------------------ ADMIN SERVICES ------------------
@@ -1779,6 +1761,15 @@ def dashboard():
         reverse=True
     )
     dashboard_metrics = calculate_dashboard_metrics(business, all_reservations)
+
+    tz = pytz.timezone(business.get("timezone") or "Asia/Beirut")
+    today_iso = datetime.now(tz).date().isoformat()
+
+    today_reservations = [
+        r for r in reservations
+        if r["date"] == today_iso and r["status"] in ["CONFIRMED", "DONE"]
+    ]
+
     return render_template(
         "dashboard.html",
         business=business,
@@ -1792,6 +1783,7 @@ def dashboard():
         whatsapp_connected=bool(business.get("access_token")),
         is_support=is_support_user(),
         dashboard_metrics=dashboard_metrics,
+        today_reservations=today_reservations,
     )
 
 @app.route("/cancel/<int:reservation_id>")

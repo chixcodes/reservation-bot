@@ -1726,16 +1726,15 @@ def dashboard():
     except Exception as e:
         print("dashboard mark_past_reservations_done warning:", e)
 
-    c.execute(
-        """
-        SELECT id, customer_name, customer_phone, service, date, time, status, notes
-        FROM reservations
-        WHERE business_id = %s
-        """,
-        (business_id,),
-    )
-    all_reservations = c.fetchall()
+    tz = pytz.timezone(business.get("timezone") or "Asia/Beirut")
+    now = datetime.now(tz)
+    cutoff_dt = now - timedelta(hours=48)
+    cutoff_date_iso = cutoff_dt.date().isoformat()
 
+    search_query = (request.args.get("q") or "").strip().lower()
+    status_filter = (request.args.get("status") or "ALL").strip().upper()
+
+    # Load services ONCE and build a fast lookup map
     c.execute(
         """
         SELECT id, name, price, duration_min
@@ -1746,6 +1745,40 @@ def dashboard():
         (business_id,),
     )
     services = c.fetchall()
+
+    service_meta = {}
+    for s in services:
+        service_meta[(s["name"] or "").strip().lower()] = {
+            "price": float(s.get("price") or 0),
+            "duration": int(s.get("duration_min") or 45),
+        }
+
+    def get_service_meta(service_name):
+        cleaned = (service_name or "").strip().lower()
+
+        # exact match
+        if cleaned in service_meta:
+            return service_meta[cleaned]
+
+        # partial match
+        for name, meta in service_meta.items():
+            if cleaned in name or name in cleaned:
+                return meta
+
+        return {"price": 0.0, "duration": 45}
+
+    # Load only recent/future reservations instead of everything
+    c.execute(
+        """
+        SELECT id, customer_name, customer_phone, service, date, time, status, notes
+        FROM reservations
+        WHERE business_id = %s
+          AND date >= %s
+        ORDER BY date DESC, time DESC, id DESC
+        """,
+        (business_id, cutoff_date_iso),
+    )
+    recent_reservations = c.fetchall()
 
     c.execute(
         """
@@ -1773,21 +1806,25 @@ def dashboard():
 
     conn.close()
 
-    tz = pytz.timezone(business.get("timezone") or "Asia/Beirut")
-    cutoff = datetime.now(tz) - timedelta(hours=48)
-
     visible_reservations = []
 
-    for r in all_reservations:
+    for r in recent_reservations:
         try:
-            end_dt = reservation_end_datetime(
-                business,
-                r["date"],
-                r["time"],
-                r["service"],
+            normalized_time = normalize_time_str(r["time"]) or r["time"]
+            start_naive = datetime.strptime(
+                f"{r['date']} {normalized_time}",
+                "%Y-%m-%d %H:%M"
             )
-            if end_dt >= cutoff:
+            start_dt = tz.localize(start_naive)
+
+            duration_min = get_service_meta(r["service"])["duration"]
+            end_dt = start_dt + timedelta(minutes=duration_min)
+
+            # keep reservations that ended within the last 48 hours
+            # OR are still upcoming/active
+            if end_dt >= cutoff_dt:
                 visible_reservations.append(r)
+
         except Exception as e:
             print("dashboard reservation filter warning:", r, e)
             visible_reservations.append(r)
@@ -1809,17 +1846,7 @@ def dashboard():
         reverse=True
     )
 
-    dashboard_metrics = calculate_dashboard_metrics(business, all_reservations)
-
-    today_iso = datetime.now(tz).date().isoformat()
-    today_reservations = [
-        r for r in reservations
-        if r["date"] == today_iso and r["status"] in ["CONFIRMED", "DONE"]
-    ]
-
-    search_query = (request.args.get("q") or "").strip().lower()
-    status_filter = (request.args.get("status") or "").strip().upper()
-
+    # Apply search/filter after visibility filtering
     filtered_reservations = reservations
 
     if search_query:
@@ -1828,6 +1855,7 @@ def dashboard():
             if search_query in (r.get("customer_name") or "").lower()
             or search_query in (r.get("customer_phone") or "").lower()
             or search_query in (r.get("service") or "").lower()
+            or search_query in (r.get("notes") or "").lower()
         ]
 
     if status_filter and status_filter != "ALL":
@@ -1835,6 +1863,33 @@ def dashboard():
             r for r in filtered_reservations
             if (r.get("status") or "").upper() == status_filter
         ]
+
+    # Dashboard metrics
+    today_iso = now.date().isoformat()
+    dashboard_metrics = {
+        "today_booked_revenue": 0.0,
+        "today_done_revenue": 0.0,
+    }
+
+    for r in reservations:
+        if r["date"] != today_iso:
+            continue
+
+        price = get_service_meta(r["service"])["price"]
+
+        if r["status"] == "CONFIRMED":
+            dashboard_metrics["today_booked_revenue"] += price
+        elif r["status"] == "DONE":
+            dashboard_metrics["today_done_revenue"] += price
+
+    # Today's schedule (sorted earliest to latest)
+    today_reservations = sorted(
+        [
+            r for r in reservations
+            if r["date"] == today_iso and r["status"] in ["CONFIRMED", "DONE"]
+        ],
+        key=reservation_sort_key
+    )
 
     return render_template(
         "dashboard.html",

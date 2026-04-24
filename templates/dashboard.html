@@ -12,7 +12,9 @@
 </head>
 <body class="bg-slate-50 min-h-screen text-slate-800">
     <div class="min-h-screen flex">
-        <aside class="w-72 bg-slate-900 text-white hidden md:flex md:flex-col">
+
+        <!-- DESKTOP SIDEBAR -->
+        <aside class="w-72 bg-slate-900 text-white hidden lg:flex lg:flex-col">
             <div class="h-16 px-6 flex items-center border-b border-slate-800">
                 <div class="w-10 h-10 rounded-2xl bg-indigo-600 flex items-center justify-center font-bold mr-3">E</div>
                 <div>
@@ -22,13 +24,50 @@
             </div>
 
             <nav class="flex-1 p-4 space-y-2">
-                <button onclick="switchTab('reservations')" id="nav-reservations" class="nav-btn w-full text-left px-4 py-3 rounded-xl font-medium bg-indigo-600 text-white">
+                <button type="button" onclick="switchTab('reservations')" data-tab="reservations" class="nav-btn w-full text-left px-4 py-3 rounded-xl font-medium bg-indigo-600 text-white">
                     Reservations
                 </button>
-                <button onclick="switchTab('services')" id="nav-services" class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
+                <button type="button" onclick="switchTab('services')" data-tab="services" class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
                     Services
                 </button>
-                <button onclick="switchTab('settings')" id="nav-settings" class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
+                <button type="button" onclick="switchTab('settings')" data-tab="settings" class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
+                    Settings
+                </button>
+            </nav>
+
+            <div class="p-4 border-t border-slate-800">
+                <a href="/logout" class="block w-full text-center py-3 rounded-xl bg-slate-800 hover:bg-slate-700 font-medium">
+                    Logout
+                </a>
+            </div>
+        </aside>
+
+        <!-- MOBILE/TABLET SIDEBAR OVERLAY -->
+        <div id="mobileSidebarOverlay" class="fixed inset-0 bg-black/40 z-40 hidden lg:hidden" onclick="closeMobileSidebar()"></div>
+
+        <!-- MOBILE/TABLET SIDEBAR -->
+        <aside id="mobileSidebar" class="fixed top-0 left-0 h-full w-72 bg-slate-900 text-white z-50 transform -translate-x-full transition-transform duration-200 lg:hidden flex flex-col">
+            <div class="h-16 px-6 flex items-center justify-between border-b border-slate-800">
+                <div class="flex items-center">
+                    <div class="w-10 h-10 rounded-2xl bg-indigo-600 flex items-center justify-center font-bold mr-3">E</div>
+                    <div>
+                        <p class="font-semibold text-lg">EzReserve</p>
+                        <p class="text-xs text-slate-400">{{ business.name }}</p>
+                    </div>
+                </div>
+                <button type="button" onclick="closeMobileSidebar()" class="text-slate-300 hover:text-white text-2xl leading-none">
+                    ×
+                </button>
+            </div>
+
+            <nav class="flex-1 p-4 space-y-2">
+                <button type="button" onclick="switchTab('reservations')" data-tab="reservations" class="nav-btn w-full text-left px-4 py-3 rounded-xl font-medium bg-indigo-600 text-white">
+                    Reservations
+                </button>
+                <button type="button" onclick="switchTab('services')" data-tab="services" class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
+                    Services
+                </button>
+                <button type="button" onclick="switchTab('settings')" data-tab="settings" class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
                     Settings
                 </button>
             </nav>
@@ -41,12 +80,21 @@
         </aside>
 
         <main class="flex-1">
-            <header class="bg-white border-b border-slate-200 px-6 md:px-8 py-5 flex items-center justify-between">
-                <div>
-                    <h1 id="page-title" class="text-2xl font-bold">Reservations</h1>
-                    <p class="text-sm text-slate-500 mt-1">{{ business.name }}</p>
+            <header class="bg-white border-b border-slate-200 px-4 md:px-6 lg:px-8 py-5 flex items-center justify-between">
+                <div class="flex items-center gap-3">
+                    <button type="button" onclick="openMobileSidebar()" class="lg:hidden inline-flex items-center justify-center w-10 h-10 rounded-lg border border-slate-200 bg-white hover:bg-slate-50">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6 text-slate-700" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+                        </svg>
+                    </button>
+
+                    <div>
+                        <h1 id="page-title" class="text-2xl font-bold">Reservations</h1>
+                        <p class="text-sm text-slate-500 mt-1">{{ business.name }}</p>
+                    </div>
                 </div>
-                <div class="md:hidden">
+
+                <div class="lg:hidden">
                     <a href="/logout" class="inline-flex px-4 py-2 rounded-lg bg-slate-900 text-white text-sm font-medium">Logout</a>
                 </div>
             </header>
@@ -455,6 +503,16 @@
     </div>
 
     <script>
+        function openMobileSidebar() {
+            document.getElementById("mobileSidebar").classList.remove("-translate-x-full");
+            document.getElementById("mobileSidebarOverlay").classList.remove("hidden");
+        }
+
+        function closeMobileSidebar() {
+            document.getElementById("mobileSidebar").classList.add("-translate-x-full");
+            document.getElementById("mobileSidebarOverlay").classList.add("hidden");
+        }
+
         function switchTab(tabId) {
             const titles = {
                 reservations: "Reservations",
@@ -465,19 +523,24 @@
             document.getElementById("page-title").innerText = titles[tabId];
 
             document.querySelectorAll(".tab-content").forEach(el => el.classList.remove("active"));
+
             document.querySelectorAll(".nav-btn").forEach(el => {
                 el.classList.remove("bg-indigo-600", "text-white");
                 el.classList.add("text-slate-300");
             });
 
             document.getElementById("tab-" + tabId).classList.add("active");
-            const activeNav = document.getElementById("nav-" + tabId);
-            activeNav.classList.remove("text-slate-300");
-            activeNav.classList.add("bg-indigo-600", "text-white");
+
+            document.querySelectorAll(`.nav-btn[data-tab="${tabId}"]`).forEach(el => {
+                el.classList.remove("text-slate-300");
+                el.classList.add("bg-indigo-600", "text-white");
+            });
 
             const url = new URL(window.location);
             url.searchParams.set("tab", tabId);
             window.history.replaceState({}, "", url);
+
+            closeMobileSidebar();
         }
 
         switchTab("{{ active_tab }}");

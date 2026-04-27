@@ -1103,8 +1103,7 @@ def process_incoming_message(business, phone, text):
         )
         return "ok", 200
 
-    # STEP 2 – SERVICE (keywords + AI fallback)
-    # STEP 2 – SERVICE (keywords + AI fallback)
+    # STEP 2 – SERVICE (keywords + AI fallback
     if state and state.get("step") == "awaiting_service":
         lang = state.get("lang", lang)
         lt2 = t.lower()
@@ -1347,6 +1346,135 @@ def calculate_dashboard_metrics(business, reservations):
 
     return metrics
 
+def get_services_for_business(business_id):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT id, name, price, duration_min
+        FROM services
+        WHERE business_id = %s
+        ORDER BY id DESC
+        """,
+        (business_id,),
+    )
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+
+def get_resources_for_business(business_id):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT
+            r.id,
+            r.name,
+            r.resource_type,
+            r.capacity,
+            r.is_active,
+            r.display_order,
+            r.color_tag,
+            COUNT(rs.id) AS assigned_services_count
+        FROM resources r
+        LEFT JOIN resource_services rs ON rs.resource_id = r.id
+        WHERE r.business_id = %s
+        GROUP BY r.id
+        ORDER BY r.display_order ASC, r.id ASC
+        """,
+        (business_id,),
+    )
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+
+def get_resource_services_map(business_id):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT resource_id, service_id
+        FROM resource_services
+        WHERE business_id = %s
+        """,
+        (business_id,),
+    )
+    rows = c.fetchall()
+    conn.close()
+
+    mapping = {}
+    for row in rows:
+        mapping.setdefault(row["resource_id"], set()).add(row["service_id"])
+    return mapping
+
+
+def ensure_default_resource_hours(resource_id, business_id):
+    """
+    When a new resource is created, copy the business weekly schedule
+    into resource_hours so every staff/court starts with the business defaults.
+    """
+    ensure_default_hours(business_id)
+
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    c.execute(
+        """
+        SELECT weekday, is_closed, open_time, close_time
+        FROM business_hours
+        WHERE business_id = %s
+        ORDER BY weekday
+        """,
+        (business_id,),
+    )
+    rows = c.fetchall()
+
+    for row in rows:
+        c.execute(
+            """
+            INSERT INTO resource_hours (business_id, resource_id, weekday, is_closed, open_time, close_time)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (resource_id, weekday) DO NOTHING
+            """,
+            (
+                business_id,
+                resource_id,
+                row["weekday"],
+                row["is_closed"],
+                row["open_time"],
+                row["close_time"],
+            ),
+        )
+
+    conn.commit()
+    conn.close()
+
+
+def get_resource_by_id(resource_id, business_id):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT *
+        FROM resources
+        WHERE id = %s AND business_id = %s
+        LIMIT 1
+        """,
+        (resource_id, business_id),
+    )
+    row = c.fetchone()
+    conn.close()
+    return row
+
+
+def normalize_capacity(value, default=1):
+    try:
+        n = int(value)
+        return n if n >= 1 else default
+    except Exception:
+        return default
 
 def is_support_user():
     return session.get("role") == "support"
@@ -1734,7 +1862,7 @@ def dashboard():
     search_query = (request.args.get("q") or "").strip().lower()
     status_filter = (request.args.get("status") or "ALL").strip().upper()
 
-    # Load services ONCE and build a fast lookup map
+    # Load services once
     c.execute(
         """
         SELECT id, name, price, duration_min
@@ -1756,21 +1884,55 @@ def dashboard():
     def get_service_meta(service_name):
         cleaned = (service_name or "").strip().lower()
 
-        # exact match
         if cleaned in service_meta:
             return service_meta[cleaned]
 
-        # partial match
         for name, meta in service_meta.items():
             if cleaned in name or name in cleaned:
                 return meta
 
         return {"price": 0.0, "duration": 45}
 
-    # Load only recent/future reservations instead of everything
+    # Load resources for future staff/court UI
     c.execute(
         """
-        SELECT id, customer_name, customer_phone, service, date, time, status, notes
+        SELECT
+            r.id,
+            r.name,
+            r.resource_type,
+            r.capacity,
+            r.is_active,
+            r.display_order,
+            r.color_tag,
+            COUNT(rs.id) AS assigned_services_count
+        FROM resources r
+        LEFT JOIN resource_services rs ON rs.resource_id = r.id
+        WHERE r.business_id = %s
+        GROUP BY r.id
+        ORDER BY r.display_order ASC, r.id ASC
+        """,
+        (business_id,),
+    )
+    resources = c.fetchall()
+
+    c.execute(
+        """
+        SELECT resource_id, service_id
+        FROM resource_services
+        WHERE business_id = %s
+        """,
+        (business_id,),
+    )
+    resource_service_rows = c.fetchall()
+
+    resource_services_map = {}
+    for row in resource_service_rows:
+        resource_services_map.setdefault(row["resource_id"], set()).add(row["service_id"])
+
+    # Load only recent/future reservations
+    c.execute(
+        """
+        SELECT id, customer_name, customer_phone, service, date, time, status, notes, resource_id, resource_name_snapshot
         FROM reservations
         WHERE business_id = %s
           AND date >= %s
@@ -1820,8 +1982,6 @@ def dashboard():
             duration_min = get_service_meta(r["service"])["duration"]
             end_dt = start_dt + timedelta(minutes=duration_min)
 
-            # keep reservations that ended within the last 48 hours
-            # OR are still upcoming/active
             if end_dt >= cutoff_dt:
                 visible_reservations.append(r)
 
@@ -1846,7 +2006,6 @@ def dashboard():
         reverse=True
     )
 
-    # Apply search/filter after visibility filtering
     filtered_reservations = reservations
 
     if search_query:
@@ -1856,6 +2015,7 @@ def dashboard():
             or search_query in (r.get("customer_phone") or "").lower()
             or search_query in (r.get("service") or "").lower()
             or search_query in (r.get("notes") or "").lower()
+            or search_query in (r.get("resource_name_snapshot") or "").lower()
         ]
 
     if status_filter and status_filter != "ALL":
@@ -1864,7 +2024,6 @@ def dashboard():
             if (r.get("status") or "").upper() == status_filter
         ]
 
-    # Dashboard metrics
     today_iso = now.date().isoformat()
     dashboard_metrics = {
         "today_booked_revenue": 0.0,
@@ -1882,7 +2041,6 @@ def dashboard():
         elif r["status"] == "DONE":
             dashboard_metrics["today_done_revenue"] += price
 
-    # Today's schedule (sorted earliest to latest)
     today_reservations = sorted(
         [
             r for r in reservations
@@ -1896,6 +2054,9 @@ def dashboard():
         business=business,
         reservations=filtered_reservations,
         services=services,
+        service_options=services,
+        resources=resources,
+        resource_services_map=resource_services_map,
         hours=hours,
         blocked_dates=blocked_dates,
         weekday_names=WEEKDAY_NAMES,
@@ -2067,6 +2228,168 @@ def delete_service(service_id):
 
     return redirect("/dashboard?tab=services")
 
+@app.route("/resources/add", methods=["POST"])
+def add_resource():
+    if "business_id" not in session:
+        return redirect("/login")
+
+    business_id = session["business_id"]
+    name = (request.form.get("name") or "").strip()
+    resource_type = (request.form.get("resource_type") or "staff").strip().lower()
+    capacity = normalize_capacity(request.form.get("capacity"), default=1)
+
+    if not name:
+        return redirect("/dashboard?tab=resources")
+
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    try:
+        c.execute(
+            """
+            INSERT INTO resources (business_id, name, resource_type, capacity, is_active, display_order)
+            VALUES (%s, %s, %s, %s, TRUE, 0)
+            RETURNING id
+            """,
+            (business_id, name, resource_type, capacity),
+        )
+        row = c.fetchone()
+        resource_id = row["id"]
+
+        conn.commit()
+        conn.close()
+
+        ensure_default_resource_hours(resource_id, business_id)
+
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        print("add_resource error:", str(e))
+
+    return redirect("/dashboard?tab=resources")
+
+
+@app.route("/resources/delete/<int:resource_id>", methods=["POST"])
+def delete_resource(resource_id):
+    if "business_id" not in session:
+        return redirect("/login")
+
+    business_id = session["business_id"]
+
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    c.execute(
+        """
+        DELETE FROM resources
+        WHERE id = %s AND business_id = %s
+        """,
+        (resource_id, business_id),
+    )
+    conn.commit()
+    conn.close()
+
+    return redirect("/dashboard?tab=resources")
+
+
+@app.route("/resources/toggle/<int:resource_id>", methods=["POST"])
+def toggle_resource(resource_id):
+    if "business_id" not in session:
+        return redirect("/login")
+
+    business_id = session["business_id"]
+
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    c.execute(
+        """
+        UPDATE resources
+        SET is_active = NOT is_active
+        WHERE id = %s AND business_id = %s
+        """,
+        (resource_id, business_id),
+    )
+    conn.commit()
+    conn.close()
+
+    return redirect("/dashboard?tab=resources")
+
+
+@app.route("/resources/update/<int:resource_id>", methods=["POST"])
+def update_resource(resource_id):
+    if "business_id" not in session:
+        return redirect("/login")
+
+    business_id = session["business_id"]
+    name = (request.form.get("name") or "").strip()
+    resource_type = (request.form.get("resource_type") or "staff").strip().lower()
+    capacity = normalize_capacity(request.form.get("capacity"), default=1)
+
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    c.execute(
+        """
+        UPDATE resources
+        SET name = %s,
+            resource_type = %s,
+            capacity = %s
+        WHERE id = %s AND business_id = %s
+        """,
+        (name, resource_type, capacity, resource_id, business_id),
+    )
+    conn.commit()
+    conn.close()
+
+    return redirect("/dashboard?tab=resources")
+
+
+@app.route("/resources/assign-services/<int:resource_id>", methods=["POST"])
+def assign_resource_services(resource_id):
+    if "business_id" not in session:
+        return redirect("/login")
+
+    business_id = session["business_id"]
+    selected_service_ids = request.form.getlist("service_ids")
+
+    clean_ids = []
+    for value in selected_service_ids:
+        try:
+            clean_ids.append(int(value))
+        except Exception:
+            pass
+
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    try:
+        c.execute(
+            """
+            DELETE FROM resource_services
+            WHERE resource_id = %s AND business_id = %s
+            """,
+            (resource_id, business_id),
+        )
+
+        for service_id in clean_ids:
+            c.execute(
+                """
+                INSERT INTO resource_services (business_id, resource_id, service_id)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (resource_id, service_id) DO NOTHING
+                """,
+                (business_id, resource_id, service_id),
+            )
+
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print("assign_resource_services error:", str(e))
+    finally:
+        conn.close()
+
+    return redirect("/dashboard?tab=resources")
 
 @app.route("/availability/update-hours", methods=["POST"])
 def update_hours():

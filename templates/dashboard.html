@@ -30,6 +30,9 @@
                 <button type="button" onclick="switchTab('services')" data-tab="services" class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
                     Services
                 </button>
+                <button type="button" onclick="switchTab('resources')" data-tab="resources" class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
+                    Resources
+                </button>
                 <button type="button" onclick="switchTab('settings')" data-tab="settings" class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
                     Settings
                 </button>
@@ -66,6 +69,9 @@
                 </button>
                 <button type="button" onclick="switchTab('services')" data-tab="services" class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
                     Services
+                </button>
+                <button type="button" onclick="switchTab('resources')" data-tab="resources" class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
+                    Resources
                 </button>
                 <button type="button" onclick="switchTab('settings')" data-tab="settings" class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
                     Settings
@@ -145,7 +151,6 @@
                         </div>
                     </div>
 
-                    <!-- TODAY'S SCHEDULE -->
                     <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden mb-6">
                         <div class="px-5 py-4 border-b border-slate-100">
                             <h2 class="font-semibold text-lg">Today’s Schedule</h2>
@@ -157,7 +162,12 @@
                             {% for r in today_reservations %}
                             <div class="px-5 py-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3 hover:bg-slate-50">
                                 <div>
-                                    <p class="font-semibold text-slate-900">{{ r.time }} — {{ r.customer_name }}</p>
+                                    <p class="font-semibold text-slate-900">
+                                        {{ r.time }} — {{ r.customer_name }}
+                                        {% if r.resource_name_snapshot %}
+                                            <span class="text-slate-500 font-normal">• {{ r.resource_name_snapshot }}</span>
+                                        {% endif %}
+                                    </p>
                                     <p class="text-sm text-slate-500">{{ r.service }} • {{ r.customer_phone }}</p>
                                 </div>
                                 <div>
@@ -181,7 +191,6 @@
                         {% endif %}
                     </div>
 
-                    <!-- SEARCH / FILTER -->
                     <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm mb-6">
                         <form id="reservationFilterForm" method="get" action="/dashboard" class="grid grid-cols-1 md:grid-cols-4 gap-4">
                             <input type="hidden" name="tab" value="reservations">
@@ -196,7 +205,7 @@
                                     type="text"
                                     name="q"
                                     value="{{ search_query or '' }}"
-                                    placeholder="Customer name, phone, or service"
+                                    placeholder="Customer name, phone, service, notes, or resource"
                                     class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                                 >
                             </div>
@@ -227,7 +236,6 @@
                         </form>
                     </div>
 
-                    <!-- RESERVATIONS TABLE -->
                     <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
                         <div class="px-5 py-4 border-b border-slate-100">
                             <h2 class="font-semibold text-lg">Reservations</h2>
@@ -241,6 +249,7 @@
                                         <th class="px-5 py-4">Customer</th>
                                         <th class="px-5 py-4">Phone</th>
                                         <th class="px-5 py-4">Service</th>
+                                        <th class="px-5 py-4">Resource</th>
                                         <th class="px-5 py-4">Date</th>
                                         <th class="px-5 py-4">Time</th>
                                         <th class="px-5 py-4">Notes</th>
@@ -254,6 +263,7 @@
                                         <td class="px-5 py-4 font-medium">{{ r.customer_name }}</td>
                                         <td class="px-5 py-4 text-slate-600">{{ r.customer_phone }}</td>
                                         <td class="px-5 py-4">{{ r.service }}</td>
+                                        <td class="px-5 py-4">{{ r.resource_name_snapshot or "-" }}</td>
                                         <td class="px-5 py-4">{{ r.date }}</td>
                                         <td class="px-5 py-4">{{ r.time }}</td>
 
@@ -295,7 +305,7 @@
                                     </tr>
                                     {% else %}
                                     <tr>
-                                        <td colspan="8" class="px-5 py-12 text-center text-slate-500">
+                                        <td colspan="9" class="px-5 py-12 text-center text-slate-500">
                                             No reservations yet.
                                         </td>
                                     </tr>
@@ -351,6 +361,162 @@
                                 {% else %}
                                 <div class="col-span-full bg-white rounded-2xl border border-slate-200 p-10 text-center text-slate-500 shadow-sm">
                                     No services yet.
+                                </div>
+                                {% endfor %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- RESOURCES TAB -->
+                <div id="tab-resources" class="tab-content">
+                    <div class="grid grid-cols-1 xl:grid-cols-3 gap-6">
+                        <div class="xl:col-span-1 bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+                            <h2 class="text-lg font-semibold mb-4">Add Resource</h2>
+                            <form method="post" action="/resources/add" class="space-y-4">
+                                <div>
+                                    <label class="block text-sm font-medium mb-2">Name</label>
+                                    <input name="name" required placeholder="Charbel, Court 1, Dr. Maya..."
+                                           class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                </div>
+
+                                <div>
+                                    <label class="block text-sm font-medium mb-2">Type</label>
+                                    <select name="resource_type"
+                                            class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                        <option value="staff">Staff</option>
+                                        <option value="doctor">Doctor</option>
+                                        <option value="court">Court</option>
+                                        <option value="room">Room</option>
+                                        <option value="pool">Pool</option>
+                                    </select>
+                                </div>
+
+                                <div>
+                                    <label class="block text-sm font-medium mb-2">Capacity</label>
+                                    <input name="capacity" type="number" min="1" value="1"
+                                           class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                </div>
+
+                                <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-xl">
+                                    Save Resource
+                                </button>
+                            </form>
+
+                            <div class="mt-6 rounded-xl bg-slate-50 border border-slate-200 p-4 text-sm text-slate-600">
+                                <p class="font-medium text-slate-800 mb-2">Examples</p>
+                                <p>• Barbershop: Charbel, Jules</p>
+                                <p>• Clinic: Dr. Sami, Dr. Maya</p>
+                                <p>• Padel: Court 1, Court 2</p>
+                                <p>• Group class: Yoga Room or Pool</p>
+                            </div>
+                        </div>
+
+                        <div class="xl:col-span-2">
+                            <div class="grid grid-cols-1 gap-6">
+                                {% for r in resources %}
+                                <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+                                    <div class="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+                                        <div>
+                                            <h3 class="text-lg font-semibold">{{ r.name }}</h3>
+                                            <p class="text-sm text-slate-500 mt-1">
+                                                {{ r.resource_type|capitalize }} • Capacity: {{ r.capacity }}
+                                            </p>
+                                        </div>
+
+                                        <div class="flex flex-wrap gap-2">
+                                            {% if r.is_active %}
+                                            <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-700">Active</span>
+                                            {% else %}
+                                            <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-600">Inactive</span>
+                                            {% endif %}
+
+                                            <span class="inline-flex px-3 py-1 rounded-full text-xs font-semibold bg-indigo-100 text-indigo-700">
+                                                {{ r.assigned_services_count }} service(s)
+                                            </span>
+                                        </div>
+                                    </div>
+
+                                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+                                        <div>
+                                            <h4 class="font-medium mb-3">Edit Resource</h4>
+                                            <form method="post" action="/resources/update/{{ r.id }}" class="space-y-3">
+                                                <div>
+                                                    <label class="block text-sm font-medium mb-2">Name</label>
+                                                    <input name="name" value="{{ r.name }}" required
+                                                           class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                                </div>
+
+                                                <div>
+                                                    <label class="block text-sm font-medium mb-2">Type</label>
+                                                    <select name="resource_type"
+                                                            class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                                        <option value="staff" {% if r.resource_type =="staff" %}selected{% endif %}>Staff</option>
+                                                        <option value="doctor" {% if r.resource_type =="doctor" %}selected{% endif %}>Doctor</option>
+                                                        <option value="court" {% if r.resource_type =="court" %}selected{% endif %}>Court</option>
+                                                        <option value="room" {% if r.resource_type =="room" %}selected{% endif %}>Room</option>
+                                                        <option value="pool" {% if r.resource_type =="pool" %}selected{% endif %}>Pool</option>
+                                                    </select>
+                                                </div>
+
+                                                <div>
+                                                    <label class="block text-sm font-medium mb-2">Capacity</label>
+                                                    <input name="capacity" type="number" min="1" value="{{ r.capacity }}"
+                                                           class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                                </div>
+
+                                                <button type="submit" class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2.5 px-4 rounded-xl">
+                                                    Save Changes
+                                                </button>
+                                            </form>
+                                        </div>
+
+                                        <div>
+                                            <h4 class="font-medium mb-3">Assign Services</h4>
+                                            <form method="post" action="/resources/assign-services/{{ r.id }}" class="space-y-3">
+                                                <div class="max-h-56 overflow-y-auto rounded-xl border border-slate-200 p-4 space-y-3 bg-slate-50">
+                                                    {% if service_options %}
+                                                        {% for s in service_options %}
+                                                        <label class="flex items-center gap-3 text-sm">
+                                                            <input type="checkbox"
+                                                                   name="service_ids"
+                                                                   value="{{ s.id }}"
+                                                                   {% if s.id in resource_services_map.get(r.id, []) %}checked{% endif %}>
+                                                            <span>{{ s.name }}</span>
+                                                        </label>
+                                                        {% endfor %}
+                                                    {% else %}
+                                                        <p class="text-sm text-slate-500">Add services first.</p>
+                                                    {% endif %}
+                                                </div>
+
+                                                <button type="submit" class="bg-slate-900 hover:bg-slate-800 text-white font-semibold py-2.5 px-4 rounded-xl">
+                                                    Save Service Assignment
+                                                </button>
+                                            </form>
+
+                                            <div class="flex flex-wrap gap-3 mt-4">
+                                                <form method="post" action="/resources/toggle/{{ r.id }}">
+                                                    <button type="submit"
+                                                            class="inline-flex px-4 py-2 rounded-lg {% if r.is_active %}bg-yellow-100 text-yellow-800 hover:bg-yellow-200{% else %}bg-green-100 text-green-800 hover:bg-green-200{% endif %} text-sm font-medium">
+                                                        {% if r.is_active %}Deactivate{% else %}Activate{% endif %}
+                                                    </button>
+                                                </form>
+
+                                                <form method="post" action="/resources/delete/{{ r.id }}"
+                                                      onsubmit="return confirm('Delete this resource?');">
+                                                    <button type="submit"
+                                                            class="inline-flex px-4 py-2 rounded-lg bg-red-50 text-red-700 hover:bg-red-100 text-sm font-medium">
+                                                        Delete
+                                                    </button>
+                                                </form>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                {% else %}
+                                <div class="bg-white rounded-2xl border border-slate-200 p-10 text-center text-slate-500 shadow-sm">
+                                    No resources yet.
                                 </div>
                                 {% endfor %}
                             </div>
@@ -517,6 +683,7 @@
             const titles = {
                 reservations: "Reservations",
                 services: "Services",
+                resources: "Resources",
                 settings: "Settings"
             };
 

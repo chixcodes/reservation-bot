@@ -1587,6 +1587,7 @@ def process_incoming_message(business, phone, text):
             send_friendly_message(phone, business, lang, tr(lang, "ask_time"), purpose="ask_time")
             return "ok", 200
 
+        # Business-level day check first
         day_rules = get_day_rules(business["id"], state["date"])
         if day_rules.get("closed"):
             send_friendly_message(phone, business, lang, tr(lang, "closed_day"), purpose="availability")
@@ -1604,135 +1605,92 @@ def process_incoming_message(business, phone, text):
 
         state["time"] = time_
 
-        day_rules = get_day_rules(business["id"], state["date"])
-        if day_rules.get("closed"):
-            send_friendly_message(phone, business, lang, tr(lang, "closed_day"), purpose="availability")
-            return "ok", 200
-
         if not is_time_within_business_hours(time_, day_rules["open_time"], day_rules["close_time"]):
             send_friendly_message(phone, business, lang, tr(lang, "outside_hours"), purpose="availability")
             return "ok", 200
 
         # --------------------------------------------------
         # RESOURCE-BASED MODE
-        # If the business has active eligible resources for this service,
-        # use resource assignment instead of business-wide slot locking.
         # --------------------------------------------------
         eligible_resources = get_active_resources_for_service(business["id"], state["service"])
-        requested_resource = extract_requested_resource_from_text(t, eligible_resources)
 
         if eligible_resources:
-            chosen_resource = None
+            requested_resource = extract_requested_resource_from_text(t, eligible_resources)
 
-            # Customer asked for a specific staff/court/resource
-            if requested_resource:
-                resource_rules = get_resource_day_rules(
-                    business["id"],
-                    requested_resource["id"],
-                    state["date"],
+            # If no explicit resource was requested, treat the first eligible one
+            # as the default/preferred resource instead of silently switching.
+            preferred_resource = requested_resource or eligible_resources[0]
+
+            preferred_rules = get_resource_day_rules(
+                business["id"],
+                preferred_resource["id"],
+                state["date"],
+            )
+
+            preferred_available = (
+                not preferred_rules.get("closed")
+                and is_time_within_business_hours(
+                    time_,
+                    preferred_rules["open_time"],
+                    preferred_rules["close_time"],
                 )
-
-                preferred_available = (
-                    not resource_rules.get("closed")
-                    and is_time_within_business_hours(
-                        time_,
-                        resource_rules["open_time"],
-                        resource_rules["close_time"],
-                    )
-                    and not is_resource_slot_full(
-                        business["id"],
-                        requested_resource["id"],
-                        state["date"],
-                        time_,
-                        state["service"],
-                    )
-                )
-
-                if preferred_available:
-                    chosen_resource = requested_resource
-                else:
-                    same_time_options = [
-                        r for r in get_available_resources_for_slot(
-                            business["id"],
-                            state["date"],
-                            time_,
-                            state["service"],
-                        )
-                        if r["id"] != requested_resource["id"]
-                    ]
-
-                    nearby_with_preferred = suggest_slots_for_resource(
-                        business["id"],
-                        requested_resource["id"],
-                        state["date"],
-                        time_,
-                        state["service"],
-                        max_suggestions=3,
-                    )
-
-                    msg_parts = [
-                        f"Sorry, {requested_resource['name']} isn’t available on {state['date']} at {time_}."
-                    ]
-
-                    if same_time_options:
-                        same_time_names = ", ".join(r["name"] for r in same_time_options[:3])
-                        msg_parts.append(f"Available at the same time: {same_time_names}.")
-
-                    if nearby_with_preferred:
-                        nearby_text = "\n".join([f"• {slot}" for slot in nearby_with_preferred])
-                        msg_parts.append(
-                            f"Closest times with {requested_resource['name']}:\n{nearby_text}"
-                        )
-
-                    send_friendly_message(
-                        phone,
-                        business,
-                        lang,
-                        "\n".join(msg_parts),
-                        purpose="slot_taken",
-                    )
-                    return "ok", 200
-
-            # No specific resource requested -> auto-assign first available
-            else:
-                available_resources = get_available_resources_for_slot(
+                and not is_resource_slot_full(
                     business["id"],
+                    preferred_resource["id"],
                     state["date"],
                     time_,
                     state["service"],
                 )
+            )
 
-                if not available_resources:
-                    options = suggest_resource_options(
+            if preferred_available:
+                chosen_resource = preferred_resource
+
+            else:
+                same_time_options = [
+                    r for r in get_available_resources_for_slot(
                         business["id"],
                         state["date"],
                         time_,
                         state["service"],
-                        max_suggestions=3,
+                    )
+                    if r["id"] != preferred_resource["id"]
+                ]
+
+                nearby_with_preferred = suggest_slots_for_resource(
+                    business["id"],
+                    preferred_resource["id"],
+                    state["date"],
+                    time_,
+                    state["service"],
+                    max_suggestions=3,
+                )
+
+                msg_parts = [
+                    f"Sorry, {preferred_resource['name']} isn’t available on {state['date']} at {time_}."
+                ]
+
+                if same_time_options:
+                    same_time_names = ", ".join(r["name"] for r in same_time_options[:3])
+                    msg_parts.append(f"Available at the same time: {same_time_names}.")
+
+                if nearby_with_preferred:
+                    nearby_text = "\n".join([f"• {slot}" for slot in nearby_with_preferred])
+                    msg_parts.append(
+                        f"Closest times with {preferred_resource['name']}:\n{nearby_text}"
                     )
 
-                    if options:
-                        options_text = "\n".join(
-                            [f"• {opt['time']} with {opt['resource_name']}" for opt in options]
-                        )
-                        send_friendly_message(
-                            phone,
-                            business,
-                            lang,
-                            f"Sorry, {state['date']} at {time_} is fully booked.\nClosest available options:\n{options_text}",
-                            purpose="slot_taken",
-                        )
-                    else:
-                        send_friendly_message(
-                            phone,
-                            business,
-                            lang,
-                            f"Sorry, {state['date']} at {time_} is fully booked and there are no nearby available options.",
-                            purpose="slot_taken",
-                        )
-                    return "ok", 200
+                if not same_time_options and not nearby_with_preferred:
+                    msg_parts.append("No nearby alternatives were found.")
 
-                chosen_resource = available_resources[0]
+                send_friendly_message(
+                    phone,
+                    business,
+                    lang,
+                    "\n".join(msg_parts),
+                    purpose="slot_taken",
+                )
+                return "ok", 200
 
             try:
                 reservation_id = save_reservation(

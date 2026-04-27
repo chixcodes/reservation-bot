@@ -87,7 +87,15 @@ def parse_when(date_str, time_str, duration_min=45):
     end = start + timedelta(minutes=duration_min)
     return start.isoformat(), end.isoformat()
 
-def create_event(summary, date_str, time_str, description="", calendar_id="primary", duration_min=45):
+def create_event(
+    summary,
+    date_str,
+    time_str,
+    description="",
+    calendar_id="primary",
+    duration_min=45,
+    color_id=None,
+):
     svc = _service()
     start_iso, end_iso = parse_when(date_str, time_str, duration_min)
     body = {
@@ -96,6 +104,10 @@ def create_event(summary, date_str, time_str, description="", calendar_id="prima
         "start": {"dateTime": start_iso, "timeZone": TIMEZONE},
         "end":   {"dateTime": end_iso,   "timeZone": TIMEZONE},
     }
+
+    if color_id:
+        body["colorId"] = str(color_id)
+
     return svc.events().insert(calendarId=calendar_id, body=body).execute()
 
 def delete_event(event_id, calendar_id="primary"):

@@ -456,6 +456,25 @@
                                            class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
                                 </div>
 
+                                <div>
+                                    <label class="block text-sm font-medium mb-2">Calendar Color</label>
+                                    <select name="color_tag"
+                                            class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                        <option value="">Default</option>
+                                        <option value="blue">Blue</option>
+                                        <option value="green">Green</option>
+                                        <option value="red">Red</option>
+                                        <option value="purple">Purple</option>
+                                        <option value="yellow">Yellow</option>
+                                        <option value="orange">Orange</option>
+                                        <option value="teal">Teal</option>
+                                        <option value="gray">Gray</option>
+                                        <option value="pink">Pink</option>
+                                        <option value="lavender">Lavender</option>
+                                        <option value="sage">Sage</option>
+                                    </select>
+                                </div>
+
                                 <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-xl">
                                     Save Resource
                                 </button>
@@ -479,6 +498,9 @@
                                             <h3 class="text-lg font-semibold">{{ r.name }}</h3>
                                             <p class="text-sm text-slate-500 mt-1">
                                                 {{ r.resource_type|capitalize }} • Capacity: {{ r.capacity }}
+                                                {% if r.color_tag %}
+                                                    • Color: {{ r.color_tag|capitalize }}
+                                                {% endif %}
                                             </p>
                                         </div>
 
@@ -521,6 +543,25 @@
                                                     <label class="block text-sm font-medium mb-2">Capacity</label>
                                                     <input name="capacity" type="number" min="1" value="{{ r.capacity }}"
                                                            class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                                </div>
+
+                                                <div>
+                                                    <label class="block text-sm font-medium mb-2">Calendar Color</label>
+                                                    <select name="color_tag"
+                                                            class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                                        <option value="" {% if not r.color_tag %}selected{% endif %}>Default</option>
+                                                        <option value="blue" {% if r.color_tag =="blue" %}selected{% endif %}>Blue</option>
+                                                        <option value="green" {% if r.color_tag =="green" %}selected{% endif %}>Green</option>
+                                                        <option value="red" {% if r.color_tag =="red" %}selected{% endif %}>Red</option>
+                                                        <option value="purple" {% if r.color_tag =="purple" %}selected{% endif %}>Purple</option>
+                                                        <option value="yellow" {% if r.color_tag =="yellow" %}selected{% endif %}>Yellow</option>
+                                                        <option value="orange" {% if r.color_tag =="orange" %}selected{% endif %}>Orange</option>
+                                                        <option value="teal" {% if r.color_tag =="teal" %}selected{% endif %}>Teal</option>
+                                                        <option value="gray" {% if r.color_tag =="gray" %}selected{% endif %}>Gray</option>
+                                                        <option value="pink" {% if r.color_tag =="pink" %}selected{% endif %}>Pink</option>
+                                                        <option value="lavender" {% if r.color_tag =="lavender" %}selected{% endif %}>Lavender</option>
+                                                        <option value="sage" {% if r.color_tag =="sage" %}selected{% endif %}>Sage</option>
+                                                    </select>
                                                 </div>
 
                                                 <button type="submit" class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2.5 px-4 rounded-xl">

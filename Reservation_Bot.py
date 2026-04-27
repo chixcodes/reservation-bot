@@ -560,7 +560,15 @@ def send_reservation_cancellation(phone, name, service, date, time, business, re
 
     send_message(phone, message, business)
 
-def add_reservation_to_google_calendar(business_id, name, service, date, time_, resource_name=None):
+def add_reservation_to_google_calendar(
+    business_id,
+    name,
+    service,
+    date,
+    time_,
+    resource_name=None,
+    resource_id=None,
+):
     try:
         service_info = get_service_info(business_id, service)
         duration_min = int(service_info.get("duration", 45))
@@ -576,42 +584,35 @@ def add_reservation_to_google_calendar(business_id, name, service, date, time_, 
             f"Time: {time_}"
         )
 
-        color_tag = None
         if resource_name:
             description += f"\nResource: {resource_name}"
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute(
-                """
-                SELECT color_tag
-                FROM resources
-                WHERE business_id = %s AND lower(name) = lower(%s)
-                LIMIT 1
-                """,
-                (business_id, resource_name),
-            )
-            row = c.fetchone()
-            conn.close()
-            if row:
-                color_tag = row.get("color_tag")
 
-        create_kwargs = {
-            "summary": summary,
-            "date_str": date,
-            "time_str": time_,
-            "description": description,
-            "calendar_id": "primary",
-            "duration_min": duration_min,
-        }
-
-        if color_tag:
-            create_kwargs["color_id"] = color_tag
+        color_id = get_resource_calendar_color_id(
+            business_id,
+            resource_id=resource_id,
+            resource_name=resource_name,
+        )
 
         try:
-            event = create_event(**create_kwargs)
+            event = create_event(
+                summary=summary,
+                date_str=date,
+                time_str=time_,
+                description=description,
+                calendar_id="primary",
+                duration_min=duration_min,
+                color_id=color_id,
+            )
         except TypeError:
-            create_kwargs.pop("color_id", None)
-            event = create_event(**create_kwargs)
+            # fallback if your gcal.py wrapper does not yet support color_id
+            event = create_event(
+                summary=summary,
+                date_str=date,
+                time_str=time_,
+                description=description,
+                calendar_id="primary",
+                duration_min=duration_min,
+            )
 
         print("Google Calendar event created:", event.get("id"))
         return event
@@ -1817,6 +1818,7 @@ def process_incoming_message(business, phone, text):
                     state.get("date", ""),
                     state.get("time", ""),
                     resource_name=chosen_resource["name"],
+                    resource_id=chosen_resource["id"],
                 )
 
                 if gcal_event:
@@ -2072,6 +2074,51 @@ def get_resource_by_id(resource_id, business_id):
     conn.close()
     return row
 
+def get_resource_calendar_color_id(business_id, resource_id=None, resource_name=None):
+    """
+    Returns a Google Calendar event color_id string based on resource.color_tag.
+    """
+    resource = None
+
+    if resource_id is not None:
+        resource = get_resource_by_id(resource_id, business_id)
+
+    elif resource_name:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT *
+            FROM resources
+            WHERE business_id = %s
+              AND lower(trim(name)) = lower(trim(%s))
+            LIMIT 1
+            """,
+            (business_id, resource_name),
+        )
+        resource = c.fetchone()
+        conn.close()
+
+    if not resource:
+        return None
+
+    tag = (resource.get("color_tag") or "").strip().lower()
+
+    color_map = {
+        "lavender": "1",
+        "sage": "2",
+        "purple": "3",
+        "pink": "4",
+        "yellow": "5",
+        "orange": "6",
+        "teal": "7",
+        "gray": "8",
+        "blue": "9",
+        "green": "10",
+        "red": "11",
+    }
+
+    return color_map.get(tag)
 
 def normalize_capacity(value, default=1):
     try:
@@ -2851,6 +2898,7 @@ def add_resource():
     name = (request.form.get("name") or "").strip()
     resource_type = (request.form.get("resource_type") or "staff").strip().lower()
     capacity = normalize_capacity(request.form.get("capacity"), default=1)
+    color_tag = (request.form.get("color_tag") or "").strip().lower() or None
 
     if not name:
         return redirect("/dashboard?tab=resources")
@@ -2861,11 +2909,11 @@ def add_resource():
     try:
         c.execute(
             """
-            INSERT INTO resources (business_id, name, resource_type, capacity, is_active, display_order)
-            VALUES (%s, %s, %s, %s, TRUE, 0)
+            INSERT INTO resources (business_id, name, resource_type, capacity, is_active, display_order, color_tag)
+            VALUES (%s, %s, %s, %s, TRUE, 0, %s)
             RETURNING id
             """,
-            (business_id, name, resource_type, capacity),
+            (business_id, name, resource_type, capacity, color_tag),
         )
         row = c.fetchone()
         resource_id = row["id"]
@@ -2939,6 +2987,7 @@ def update_resource(resource_id):
     name = (request.form.get("name") or "").strip()
     resource_type = (request.form.get("resource_type") or "staff").strip().lower()
     capacity = normalize_capacity(request.form.get("capacity"), default=1)
+    color_tag = (request.form.get("color_tag") or "").strip().lower() or None
 
     conn = get_db_connection()
     c = conn.cursor()
@@ -2948,10 +2997,11 @@ def update_resource(resource_id):
         UPDATE resources
         SET name = %s,
             resource_type = %s,
-            capacity = %s
+            capacity = %s,
+            color_tag = %s
         WHERE id = %s AND business_id = %s
         """,
-        (name, resource_type, capacity, resource_id, business_id),
+        (name, resource_type, capacity, color_tag, resource_id, business_id),
     )
     conn.commit()
     conn.close()

@@ -28,25 +28,54 @@ import time
 # ------------------ BUSINESS HELPERS ------------------
 
 processed_message_ids = {}
-PROCESSED_MESSAGE_TTL = 60 * 60  # 1 hour
+processing_message_ids = {}
+
+PROCESSED_MESSAGE_TTL = 60 * 60   # 1 hour
+PROCESSING_MESSAGE_TTL = 60        # 1 minute
 
 
-def is_duplicate_message(message_id):
+def cleanup_message_tracking():
     now = time.time()
 
-    # cleanup old ids
-    expired = [mid for mid, ts in processed_message_ids.items() if now - ts > PROCESSED_MESSAGE_TTL]
-    for mid in expired:
+    expired_done = [
+        mid for mid, ts in processed_message_ids.items()
+        if now - ts > PROCESSED_MESSAGE_TTL
+    ]
+    for mid in expired_done:
         processed_message_ids.pop(mid, None)
 
-    if not message_id:
-        return False
+    expired_processing = [
+        mid for mid, ts in processing_message_ids.items()
+        if now - ts > PROCESSING_MESSAGE_TTL
+    ]
+    for mid in expired_processing:
+        processing_message_ids.pop(mid, None)
 
-    if message_id in processed_message_ids:
-        return True
 
-    processed_message_ids[message_id] = now
-    return False
+def is_message_already_done(message_id):
+    cleanup_message_tracking()
+    return bool(message_id and message_id in processed_message_ids)
+
+
+def is_message_currently_processing(message_id):
+    cleanup_message_tracking()
+    return bool(message_id and message_id in processing_message_ids)
+
+
+def mark_message_processing(message_id):
+    if message_id:
+        processing_message_ids[message_id] = time.time()
+
+
+def mark_message_done(message_id):
+    if message_id:
+        processing_message_ids.pop(message_id, None)
+        processed_message_ids[message_id] = time.time()
+
+
+def clear_message_processing(message_id):
+    if message_id:
+        processing_message_ids.pop(message_id, None)
 
 def get_business_by_phone_number_id(phone_number_id: str):
     conn = get_db_connection()
@@ -262,13 +291,11 @@ def get_service_info(business_id, service_name):
     conn.close()
 
     if row:
-        print(f"get_service_info matched: input={service_name!r}, db_name={row['name']!r}")
         return {
             "price": float(row["price"] or 0),
             "duration": int(row["duration_min"] or 45),
         }
 
-    print(f"get_service_info: no match for service={service_name!r}, business_id={business_id}")
     return {"price": 0.0, "duration": 45}
 
 
@@ -549,17 +576,42 @@ def add_reservation_to_google_calendar(business_id, name, service, date, time_, 
             f"Time: {time_}"
         )
 
+        color_tag = None
         if resource_name:
             description += f"\nResource: {resource_name}"
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute(
+                """
+                SELECT color_tag
+                FROM resources
+                WHERE business_id = %s AND lower(name) = lower(%s)
+                LIMIT 1
+                """,
+                (business_id, resource_name),
+            )
+            row = c.fetchone()
+            conn.close()
+            if row:
+                color_tag = row.get("color_tag")
 
-        event = create_event(
-            summary=summary,
-            date_str=date,
-            time_str=time_,
-            description=description,
-            calendar_id="primary",
-            duration_min=duration_min,
-        )
+        create_kwargs = {
+            "summary": summary,
+            "date_str": date,
+            "time_str": time_,
+            "description": description,
+            "calendar_id": "primary",
+            "duration_min": duration_min,
+        }
+
+        if color_tag:
+            create_kwargs["color_id"] = color_tag
+
+        try:
+            event = create_event(**create_kwargs)
+        except TypeError:
+            create_kwargs.pop("color_id", None)
+            event = create_event(**create_kwargs)
 
         print("Google Calendar event created:", event.get("id"))
         return event
@@ -2029,9 +2081,16 @@ def webhook():
         return "ok", 200
 
     message_id = message.get("id")
-    if is_duplicate_message(message_id):
-        print("Duplicate message ignored:", message_id, flush=True)
+
+    if is_message_already_done(message_id):
+        print("Duplicate message already completed:", message_id, flush=True)
         return "ok", 200
+
+    if is_message_currently_processing(message_id):
+        print("Duplicate message still processing:", message_id, flush=True)
+        return "ok", 200
+
+    mark_message_processing(message_id)
 
     phone = message.get("from")
     text = message.get("text", {}).get("body", "").strip()
@@ -2041,17 +2100,20 @@ def webhook():
     business = get_business_by_phone_number_id(phone_number_id)
     print("business lookup result:", dict(business) if business else None, flush=True)
     if not business:
+        clear_message_processing(message_id)
         print("No business configured for phone_number_id", phone_number_id, flush=True)
         return "ok", 200
 
     print("Calling process_incoming_message...", flush=True)
 
     try:
-        process_incoming_message(business, phone, text)
+        result = process_incoming_message(business, phone, text)
+        mark_message_done(message_id)
+        return result
     except Exception as e:
+        clear_message_processing(message_id)
         print("process_incoming_message error:", str(e), flush=True)
-
-    return "ok", 200
+        return "ok", 200
 
 # ------------------ ADMIN BUSINESSES ------------------ #
 

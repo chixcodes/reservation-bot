@@ -634,6 +634,59 @@ def save_google_event_id(reservation_id, google_event_id):
     conn.commit()
     conn.close()
 
+
+def update_reservation_note_value(reservation_id, business_id, note):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        UPDATE reservations
+        SET notes = %s
+        WHERE id = %s AND business_id = %s
+        """,
+        (note, reservation_id, business_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def is_resource_allowed_for_service(business_id, resource_id, service_name):
+    service_row = get_service_row_for_business(business_id, service_name)
+    if not service_row:
+        return False
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT 1
+        FROM resource_services
+        WHERE business_id = %s
+        LIMIT 1
+        """,
+        (business_id,),
+    )
+    has_any_assignments = bool(c.fetchone())
+
+    if not has_any_assignments:
+        conn.close()
+        return True
+
+    c.execute(
+        """
+        SELECT 1
+        FROM resource_services
+        WHERE business_id = %s
+          AND resource_id = %s
+          AND service_id = %s
+        LIMIT 1
+        """,
+        (business_id, resource_id, service_row["id"]),
+    )
+    row = c.fetchone()
+    conn.close()
+    return bool(row)
+
 def apply_tone_to_text(business, text):
     tone = (business.get("assistant_tone") or "friendly").strip().lower()
 
@@ -2988,6 +3041,126 @@ def update_hours():
     conn.close()
 
     return redirect("/dashboard?tab=settings")
+
+@app.route("/reservations/add-manual", methods=["POST"])
+def add_manual_reservation():
+    if "business_id" not in session:
+        return redirect("/login")
+
+    business_id = session["business_id"]
+    business = get_business_by_id(business_id)
+    if not business:
+        return redirect("/dashboard?tab=reservations")
+
+    customer_name = (request.form.get("customer_name") or "").strip()
+    customer_phone = (request.form.get("customer_phone") or "").strip()
+    service = (request.form.get("service") or "").strip()
+    date_raw = (request.form.get("date") or "").strip()
+    time_raw = (request.form.get("time") or "").strip()
+    note = (request.form.get("note") or "").strip()
+    resource_id_raw = (request.form.get("resource_id") or "").strip()
+
+    if not customer_name or not service or not date_raw or not time_raw:
+        return redirect("/dashboard?tab=reservations")
+
+    valid_service, _available = validate_service_for_business(business_id, service)
+    if not valid_service:
+        return redirect("/dashboard?tab=reservations")
+
+    try:
+        date_iso = datetime.strptime(date_raw, "%Y-%m-%d").date().isoformat()
+    except Exception:
+        return redirect("/dashboard?tab=reservations")
+
+    time_norm = normalize_time_str_with_hours(time_raw)
+    if not time_norm:
+        return redirect("/dashboard?tab=reservations")
+
+    day_rules = get_day_rules(business_id, date_iso)
+    if day_rules.get("closed"):
+        return redirect("/dashboard?tab=reservations")
+
+    if not is_time_within_business_hours(time_norm, day_rules["open_time"], day_rules["close_time"]):
+        return redirect("/dashboard?tab=reservations")
+
+    chosen_resource = None
+
+    eligible_resources = get_active_resources_for_service(business_id, valid_service)
+
+    if resource_id_raw:
+        try:
+            resource_id = int(resource_id_raw)
+        except Exception:
+            resource_id = None
+
+        if resource_id:
+            resource = get_resource_by_id(resource_id, business_id)
+            if not resource or not resource.get("is_active"):
+                return redirect("/dashboard?tab=reservations")
+
+            if not is_resource_allowed_for_service(business_id, resource_id, valid_service):
+                return redirect("/dashboard?tab=reservations")
+
+            resource_rules = get_resource_day_rules(business_id, resource_id, date_iso)
+            if resource_rules.get("closed"):
+                return redirect("/dashboard?tab=reservations")
+
+            if not is_time_within_business_hours(time_norm, resource_rules["open_time"], resource_rules["close_time"]):
+                return redirect("/dashboard?tab=reservations")
+
+            if is_resource_slot_full(business_id, resource_id, date_iso, time_norm, valid_service):
+                return redirect("/dashboard?tab=reservations")
+
+            chosen_resource = resource
+
+    elif eligible_resources:
+        available_resources = get_available_resources_for_slot(
+            business_id,
+            date_iso,
+            time_norm,
+            valid_service,
+        )
+        if not available_resources:
+            return redirect("/dashboard?tab=reservations")
+        chosen_resource = available_resources[0]
+
+    else:
+        if is_slot_taken(business_id, date_iso, time_norm, valid_service):
+            return redirect("/dashboard?tab=reservations")
+
+    try:
+        reservation_id = save_reservation(
+            business_id,
+            customer_phone,
+            customer_name,
+            valid_service,
+            date_iso,
+            time_norm,
+            resource_id=chosen_resource["id"] if chosen_resource else None,
+            resource_name_snapshot=chosen_resource["name"] if chosen_resource else None,
+        )
+
+        if note:
+            update_reservation_note_value(reservation_id, business_id, note)
+
+        gcal_event = add_reservation_to_google_calendar(
+            business_id,
+            customer_name,
+            valid_service,
+            date_iso,
+            time_norm,
+            resource_name=chosen_resource["name"] if chosen_resource else None,
+        )
+        if gcal_event:
+            event_id = gcal_event.get("id")
+            if event_id:
+                save_google_event_id(reservation_id, event_id)
+
+    except Exception as e:
+        print("add_manual_reservation error:", str(e))
+
+    return redirect("/dashboard?tab=reservations")
+
 
 @app.route("/reservations/update-note/<int:reservation_id>", methods=["POST"])
 def update_reservation_note(reservation_id):

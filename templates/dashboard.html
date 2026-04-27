@@ -151,6 +151,62 @@
                         </div>
                     </div>
 
+                    <!-- MANUAL RESERVATION -->
+                    <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm mb-6">
+                        <div class="mb-4">
+                            <h2 class="font-semibold text-lg">Add Reservation Manually</h2>
+                            <p class="text-sm text-slate-500">For phone calls, walk-ins, or staff-created bookings.</p>
+                        </div>
+                        <form method="post" action="/reservations/add-manual" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+                            <div>
+                                <label class="block text-sm font-medium mb-2">Customer Name</label>
+                                <input name="customer_name" required class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium mb-2">Phone</label>
+                                <input name="customer_phone" placeholder="Optional" class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium mb-2">Service</label>
+                                <select name="service" required class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                    <option value="">Select service</option>
+                                    {% for s in service_options %}
+                                    <option value="{{ s.name }}">{{ s.name }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium mb-2">Resource</label>
+                                <select name="resource_id" class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                    <option value="">Auto assign / No preference</option>
+                                    {% for r in resources %}
+                                    {% if r.is_active %}
+                                    <option value="{{ r.id }}">{{ r.name }} ({{ r.resource_type }})</option>
+                                    {% endif %}
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium mb-2">Date</label>
+                                <input type="date" name="date" required class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium mb-2">Time</label>
+                                <input type="time" name="time" required class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                            </div>
+                            <div class="md:col-span-2">
+                                <label class="block text-sm font-medium mb-2">Notes</label>
+                                <input name="note" placeholder="Optional note" class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                            </div>
+                            <div class="xl:col-span-4">
+                                <button type="submit" class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-5 rounded-xl">
+                                    Add Reservation
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+
+                    <!-- TODAY'S SCHEDULE -->
                     <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden mb-6">
                         <div class="px-5 py-4 border-b border-slate-100">
                             <h2 class="font-semibold text-lg">Today’s Schedule</h2>
@@ -191,6 +247,7 @@
                         {% endif %}
                     </div>
 
+                    <!-- SEARCH / FILTER -->
                     <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm mb-6">
                         <form id="reservationFilterForm" method="get" action="/dashboard" class="grid grid-cols-1 md:grid-cols-4 gap-4">
                             <input type="hidden" name="tab" value="reservations">
@@ -236,6 +293,7 @@
                         </form>
                     </div>
 
+                    <!-- RESERVATIONS TABLE -->
                     <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
                         <div class="px-5 py-4 border-b border-slate-100">
                             <h2 class="font-semibold text-lg">Reservations</h2>

@@ -76,9 +76,7 @@ def init_db():
     # Your current booking flow still relies on single business-wide slot locking.
     # We will replace/drop this later when we switch the booking engine to resources.
     c.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS unique_confirmed_slot
-        ON reservations (business_id, date, time)
-        WHERE status = 'CONFIRMED';
+        DROP INDEX IF EXISTS unique_confirmed_slot;
     """)
 
     c.execute("""

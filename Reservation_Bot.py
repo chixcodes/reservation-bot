@@ -393,22 +393,44 @@ def suggest_slots(
     return [f"{m // 60:02d}:{m % 60:02d}" for m in selected]
 
 
-def save_reservation(business_id, phone, name, service, date, time_):
+def save_reservation(
+    business_id,
+    phone,
+    name,
+    service,
+    date,
+    time_,
+    resource_id=None,
+    resource_name_snapshot=None,
+):
     conn = get_db_connection()
     try:
         c = conn.cursor()
         c.execute(
             """
-            INSERT INTO reservations (business_id, customer_name, customer_phone, service, date, time, status)
-            VALUES (%s, %s, %s, %s, %s, %s, 'CONFIRMED')
+            INSERT INTO reservations (
+                business_id,
+                customer_name,
+                customer_phone,
+                service,
+                date,
+                time,
+                status,
+                resource_id,
+                resource_name_snapshot
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, 'CONFIRMED', %s, %s)
             RETURNING id
             """,
-            (business_id, name, phone, service, date, time_),
+            (business_id, name, phone, service, date, time_, resource_id, resource_name_snapshot),
         )
         row = c.fetchone()
         new_id = row["id"] if isinstance(row, dict) else row[0]
         conn.commit()
-        print(f"SAVED (CONFIRMED) -> id={new_id}, {name}, {service} on {date} at {time_}")
+        print(
+            f"SAVED (CONFIRMED) -> id={new_id}, {name}, {service} on {date} at {time_}, "
+            f"resource_id={resource_id}, resource_name={resource_name_snapshot}"
+        )
         return new_id
     except Exception as e:
         conn.rollback()
@@ -466,16 +488,27 @@ def is_slot_taken(business_id, date_iso, new_time, new_service):
     return False
 
 
-def send_reservation_confirmation(phone, name, service, date, time, business, calendar_added=False, lang="en"):
+def send_reservation_confirmation(
+    phone,
+    name,
+    service,
+    date,
+    time,
+    business,
+    calendar_added=False,
+    lang="en",
+    resource_name=None,
+):
     service_info = get_service_info(business["id"], service)
     total_price = service_info["price"]
 
+    resource_line = f"\nWith: {resource_name}" if resource_name else ""
     calendar_line = "\n🗓 Also added to our Google Calendar." if calendar_added else ""
 
     base_message = (
         f"✅ Your reservation is confirmed!\n"
         f"Name: {name}\n"
-        f"Service: {service}\n"
+        f"Service: {service}{resource_line}\n"
         f"Date: {date}\n"
         f"Time: {time}\n"
         f"Total Price: ${total_price:.2f}"
@@ -486,30 +519,38 @@ def send_reservation_confirmation(phone, name, service, date, time, business, ca
     final_message = humanize_reply(lang, base_message, purpose="confirmation")
     send_message(phone, final_message, business)
 
+def send_reservation_cancellation(phone, name, service, date, time, business, resource_name=None):
+    resource_line = f"\nWith: {resource_name}" if resource_name else ""
 
-def send_reservation_cancellation(phone, name, service, date, time, business):
     message = (
         f"❌ Your reservation has been canceled.\n"
         f"Name: {name}\n"
-        f"Service: {service}\n"
+        f"Service: {service}{resource_line}\n"
         f"Date: {date}\n"
         f"Time: {time}\n\n"
         f"If this is a mistake, please contact us to reschedule."
     )
+
     send_message(phone, message, business)
 
-def add_reservation_to_google_calendar(business_id, name, service, date, time_):
+def add_reservation_to_google_calendar(business_id, name, service, date, time_, resource_name=None):
     try:
         service_info = get_service_info(business_id, service)
         duration_min = int(service_info.get("duration", 45))
 
         summary = f"{service} - {name}"
+        if resource_name:
+            summary += f" with {resource_name}"
+
         description = (
             f"Customer: {name}\n"
             f"Service: {service}\n"
             f"Date: {date}\n"
             f"Time: {time_}"
         )
+
+        if resource_name:
+            description += f"\nResource: {resource_name}"
 
         event = create_event(
             summary=summary,
@@ -1027,6 +1068,340 @@ def validate_service_for_business(business_id, service_name):
                 return s, services
 
     return None, services
+def get_service_row_for_business(business_id, service_name):
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    c.execute(
+        """
+        SELECT id, name, price, duration_min
+        FROM services
+        WHERE business_id = %s
+          AND lower(trim(name)) = lower(trim(%s))
+        LIMIT 1
+        """,
+        (business_id, service_name),
+    )
+    row = c.fetchone()
+
+    if not row:
+        c.execute(
+            """
+            SELECT id, name, price, duration_min
+            FROM services
+            WHERE business_id = %s
+              AND lower(name) LIKE lower(%s)
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (business_id, f"%{service_name.strip()}%"),
+        )
+        row = c.fetchone()
+
+    conn.close()
+    return row
+
+
+def get_active_resources_for_service(business_id, service_name):
+    """
+    If no resource-service assignments exist for the business yet,
+    treat all active resources as eligible.
+    Once assignments exist, only assigned resources are eligible.
+    """
+    service_row = get_service_row_for_business(business_id, service_name)
+
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    c.execute(
+        """
+        SELECT 1
+        FROM resource_services
+        WHERE business_id = %s
+        LIMIT 1
+        """,
+        (business_id,),
+    )
+    has_any_assignments = bool(c.fetchone())
+
+    if not has_any_assignments:
+        c.execute(
+            """
+            SELECT *
+            FROM resources
+            WHERE business_id = %s
+              AND is_active = TRUE
+            ORDER BY display_order ASC, id ASC
+            """,
+            (business_id,),
+        )
+        rows = c.fetchall()
+        conn.close()
+        return rows
+
+    if not service_row:
+        conn.close()
+        return []
+
+    c.execute(
+        """
+        SELECT r.*
+        FROM resources r
+        JOIN resource_services rs ON rs.resource_id = r.id
+        WHERE r.business_id = %s
+          AND r.is_active = TRUE
+          AND rs.service_id = %s
+        ORDER BY r.display_order ASC, r.id ASC
+        """,
+        (business_id, service_row["id"]),
+    )
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+
+def extract_requested_resource_from_text(text, resources):
+    """
+    If the customer writes something like:
+      - '4 with Charbel'
+      - 'with Jules at 5'
+    detect the resource name from the text.
+    """
+    lt = (text or "").strip().lower()
+    best = None
+    best_len = -1
+
+    for r in resources:
+        name = (r.get("name") or "").strip().lower()
+        if name and name in lt:
+            if len(name) > best_len:
+                best = r
+                best_len = len(name)
+
+    return best
+
+
+def get_resource_day_rules(business_id, resource_id, date_iso):
+    target_date = datetime.strptime(date_iso, "%Y-%m-%d").date()
+    weekday = target_date.weekday()
+
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    c.execute(
+        """
+        SELECT id
+        FROM resource_blocked_dates
+        WHERE business_id = %s
+          AND resource_id = %s
+          AND blocked_date = %s
+        """,
+        (business_id, resource_id, date_iso),
+    )
+    blocked = c.fetchone()
+    if blocked:
+        conn.close()
+        return {"blocked": True, "closed": True, "reason": "blocked_date"}
+
+    c.execute(
+        """
+        SELECT weekday, is_closed,
+               TO_CHAR(open_time, 'HH24:MI') AS open_time,
+               TO_CHAR(close_time, 'HH24:MI') AS close_time
+        FROM resource_hours
+        WHERE business_id = %s
+          AND resource_id = %s
+          AND weekday = %s
+        """,
+        (business_id, resource_id, weekday),
+    )
+    row = c.fetchone()
+    conn.close()
+
+    if not row:
+        return get_day_rules(business_id, date_iso)
+
+    if row["is_closed"]:
+        return {"blocked": False, "closed": True, "reason": "weekly_closed"}
+
+    return {
+        "blocked": False,
+        "closed": False,
+        "open_time": row["open_time"],
+        "close_time": row["close_time"],
+    }
+
+
+def is_resource_slot_full(business_id, resource_id, date_iso, new_time, new_service):
+    """
+    Capacity-aware per-resource slot check.
+    Staff/courts usually have capacity=1.
+    Pools/rooms can have capacity > 1.
+    """
+    resource = get_resource_by_id(resource_id, business_id)
+    if not resource:
+        return True
+
+    capacity = int(resource.get("capacity") or 1)
+
+    new_service_info = get_service_info(business_id, new_service)
+    new_duration = int(new_service_info.get("duration", 45))
+    new_start = time_to_minutes(new_time)
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT service, time
+        FROM reservations
+        WHERE business_id = %s
+          AND resource_id = %s
+          AND date = %s
+          AND status = 'CONFIRMED'
+        """,
+        (business_id, resource_id, date_iso),
+    )
+    rows = c.fetchall()
+    conn.close()
+
+    overlapping = 0
+
+    for row in rows:
+        existing_time = normalize_time_str(row["time"])
+        if not existing_time:
+            continue
+
+        existing_service_info = get_service_info(business_id, row["service"])
+        existing_duration = int(existing_service_info.get("duration", 45))
+        existing_start = time_to_minutes(existing_time)
+
+        if ranges_overlap(new_start, new_duration, existing_start, existing_duration):
+            overlapping += 1
+
+    return overlapping >= capacity
+
+
+def get_available_resources_for_slot(business_id, date_iso, time_, service_name):
+    eligible_resources = get_active_resources_for_service(business_id, service_name)
+    available = []
+
+    for r in eligible_resources:
+        rules = get_resource_day_rules(business_id, r["id"], date_iso)
+        if rules.get("closed"):
+            continue
+
+        if not is_time_within_business_hours(time_, rules["open_time"], rules["close_time"]):
+            continue
+
+        if not is_resource_slot_full(business_id, r["id"], date_iso, time_, service_name):
+            available.append(r)
+
+    return available
+
+
+def suggest_slots_for_resource(
+    business_id,
+    resource_id,
+    date_iso,
+    requested_time_str,
+    service_name,
+    max_suggestions=3,
+):
+    rules = get_resource_day_rules(business_id, resource_id, date_iso)
+    if rules.get("closed"):
+        return []
+
+    open_start = rules["open_time"]
+    open_end = rules["close_time"]
+
+    requested_norm = normalize_time_str_with_hours(
+        requested_time_str,
+        open_start,
+        open_end,
+    ) or open_start
+
+    requested_minutes = time_to_minutes(requested_norm)
+    open_minutes = time_to_minutes(open_start)
+    close_minutes = time_to_minutes(open_end)
+
+    duration = int(get_service_info(business_id, service_name).get("duration", 45))
+
+    free_slots = []
+    current = open_minutes
+
+    while current + duration <= close_minutes:
+        hhmm = f"{current // 60:02d}:{current % 60:02d}"
+        if not is_resource_slot_full(business_id, resource_id, date_iso, hhmm, service_name):
+            free_slots.append(current)
+        current += 15
+
+    later_slots = [m for m in free_slots if m >= requested_minutes]
+    earlier_slots = [m for m in free_slots if m < requested_minutes]
+
+    selected = later_slots[:max_suggestions]
+    if len(selected) < max_suggestions:
+        needed = max_suggestions - len(selected)
+        selected += earlier_slots[-needed:]
+
+    selected = sorted(selected)
+    return [f"{m // 60:02d}:{m % 60:02d}" for m in selected]
+
+
+def suggest_resource_options(
+    business_id,
+    date_iso,
+    requested_time_str,
+    service_name,
+    max_suggestions=3,
+):
+    """
+    Return combined alternatives like:
+      16:00 with Jules
+      16:15 with Charbel
+    """
+    eligible_resources = get_active_resources_for_service(business_id, service_name)
+    if not eligible_resources:
+        return []
+
+    requested_norm = normalize_time_str(requested_time_str) or requested_time_str
+    requested_minutes = time_to_minutes(requested_norm)
+
+    duration = int(get_service_info(business_id, service_name).get("duration", 45))
+    candidates = []
+
+    for r in eligible_resources:
+        rules = get_resource_day_rules(business_id, r["id"], date_iso)
+        if rules.get("closed"):
+            continue
+
+        open_minutes = time_to_minutes(rules["open_time"])
+        close_minutes = time_to_minutes(rules["close_time"])
+
+        current = open_minutes
+        while current + duration <= close_minutes:
+            hhmm = f"{current // 60:02d}:{current % 60:02d}"
+            if not is_resource_slot_full(business_id, r["id"], date_iso, hhmm, service_name):
+                candidates.append({
+                    "time": hhmm,
+                    "resource_name": r["name"],
+                    "distance": abs(current - requested_minutes),
+                })
+            current += 15
+
+    candidates.sort(key=lambda x: (x["distance"], x["time"], x["resource_name"]))
+
+    seen = set()
+    final = []
+    for item in candidates:
+        key = (item["time"], item["resource_name"])
+        if key in seen:
+            continue
+        seen.add(key)
+        final.append(item)
+        if len(final) >= max_suggestions:
+            break
+
+    return final
 
 def process_incoming_message(business, phone, text):
     global user_state
@@ -1238,6 +1613,180 @@ def process_incoming_message(business, phone, text):
             send_friendly_message(phone, business, lang, tr(lang, "outside_hours"), purpose="availability")
             return "ok", 200
 
+        # --------------------------------------------------
+        # RESOURCE-BASED MODE
+        # If the business has active eligible resources for this service,
+        # use resource assignment instead of business-wide slot locking.
+        # --------------------------------------------------
+        eligible_resources = get_active_resources_for_service(business["id"], state["service"])
+        requested_resource = extract_requested_resource_from_text(t, eligible_resources)
+
+        if eligible_resources:
+            chosen_resource = None
+
+            # Customer asked for a specific staff/court/resource
+            if requested_resource:
+                resource_rules = get_resource_day_rules(
+                    business["id"],
+                    requested_resource["id"],
+                    state["date"],
+                )
+
+                preferred_available = (
+                    not resource_rules.get("closed")
+                    and is_time_within_business_hours(
+                        time_,
+                        resource_rules["open_time"],
+                        resource_rules["close_time"],
+                    )
+                    and not is_resource_slot_full(
+                        business["id"],
+                        requested_resource["id"],
+                        state["date"],
+                        time_,
+                        state["service"],
+                    )
+                )
+
+                if preferred_available:
+                    chosen_resource = requested_resource
+                else:
+                    same_time_options = [
+                        r for r in get_available_resources_for_slot(
+                            business["id"],
+                            state["date"],
+                            time_,
+                            state["service"],
+                        )
+                        if r["id"] != requested_resource["id"]
+                    ]
+
+                    nearby_with_preferred = suggest_slots_for_resource(
+                        business["id"],
+                        requested_resource["id"],
+                        state["date"],
+                        time_,
+                        state["service"],
+                        max_suggestions=3,
+                    )
+
+                    msg_parts = [
+                        f"Sorry, {requested_resource['name']} isn’t available on {state['date']} at {time_}."
+                    ]
+
+                    if same_time_options:
+                        same_time_names = ", ".join(r["name"] for r in same_time_options[:3])
+                        msg_parts.append(f"Available at the same time: {same_time_names}.")
+
+                    if nearby_with_preferred:
+                        nearby_text = "\n".join([f"• {slot}" for slot in nearby_with_preferred])
+                        msg_parts.append(
+                            f"Closest times with {requested_resource['name']}:\n{nearby_text}"
+                        )
+
+                    send_friendly_message(
+                        phone,
+                        business,
+                        lang,
+                        "\n".join(msg_parts),
+                        purpose="slot_taken",
+                    )
+                    return "ok", 200
+
+            # No specific resource requested -> auto-assign first available
+            else:
+                available_resources = get_available_resources_for_slot(
+                    business["id"],
+                    state["date"],
+                    time_,
+                    state["service"],
+                )
+
+                if not available_resources:
+                    options = suggest_resource_options(
+                        business["id"],
+                        state["date"],
+                        time_,
+                        state["service"],
+                        max_suggestions=3,
+                    )
+
+                    if options:
+                        options_text = "\n".join(
+                            [f"• {opt['time']} with {opt['resource_name']}" for opt in options]
+                        )
+                        send_friendly_message(
+                            phone,
+                            business,
+                            lang,
+                            f"Sorry, {state['date']} at {time_} is fully booked.\nClosest available options:\n{options_text}",
+                            purpose="slot_taken",
+                        )
+                    else:
+                        send_friendly_message(
+                            phone,
+                            business,
+                            lang,
+                            f"Sorry, {state['date']} at {time_} is fully booked and there are no nearby available options.",
+                            purpose="slot_taken",
+                        )
+                    return "ok", 200
+
+                chosen_resource = available_resources[0]
+
+            try:
+                reservation_id = save_reservation(
+                    business["id"],
+                    phone,
+                    state.get("name", ""),
+                    state.get("service", ""),
+                    state.get("date", ""),
+                    state.get("time", ""),
+                    resource_id=chosen_resource["id"],
+                    resource_name_snapshot=chosen_resource["name"],
+                )
+                print("Reservation saved with id:", reservation_id)
+
+                gcal_event = add_reservation_to_google_calendar(
+                    business["id"],
+                    state.get("name", ""),
+                    state.get("service", ""),
+                    state.get("date", ""),
+                    state.get("time", ""),
+                    resource_name=chosen_resource["name"],
+                )
+
+                if gcal_event:
+                    event_id = gcal_event.get("id")
+                    print("Reservation added to Google Calendar:", event_id)
+                    if event_id:
+                        save_google_event_id(reservation_id, event_id)
+                else:
+                    print("Google Calendar event was not created")
+
+                send_reservation_confirmation(
+                    phone,
+                    state.get("name", ""),
+                    state.get("service", ""),
+                    state.get("date", ""),
+                    state.get("time", ""),
+                    business,
+                    calendar_added=bool(gcal_event),
+                    lang=lang,
+                    resource_name=chosen_resource["name"],
+                )
+
+                user_state.pop(key, None)
+                return "ok", 200
+
+            except Exception as e:
+                print("STEP 4 resource save error:", str(e))
+                send_friendly_message(phone, business, lang, tr(lang, "save_error"), purpose="error")
+                return "ok", 200
+
+        # --------------------------------------------------
+        # FALLBACK: old single-slot mode
+        # --------------------------------------------------
         if is_slot_taken(business["id"], state["date"], time_, state["service"]):
             suggestions = suggest_slots(
                 business["id"],
@@ -1314,14 +1863,6 @@ def process_incoming_message(business, phone, text):
             print("STEP 4 save error:", str(e))
             send_friendly_message(phone, business, lang, tr(lang, "save_error"), purpose="error")
             return "ok", 200
-    send_friendly_message(
-        phone,
-        business,
-        lang,
-        "I didn’t fully understand that. You can say hi, book, or cancel.",
-        purpose="fallback",
-    )
-    return "ok", 200
 
 def calculate_dashboard_metrics(business, reservations):
     tz = pytz.timezone(business.get("timezone") or "Asia/Beirut")

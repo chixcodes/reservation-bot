@@ -529,18 +529,15 @@ def send_reservation_confirmation(
     service_info = get_service_info(business["id"], service)
     total_price = service_info["price"]
 
-    resource_line = f"\nWith: {resource_name}" if resource_name else ""
-    calendar_line = "\n🗓 Also added to our Google Calendar." if calendar_added else ""
-
-    base_message = (
-        f"✅ Your reservation is confirmed!\n"
-        f"Name: {name}\n"
-        f"Service: {service}{resource_line}\n"
-        f"Date: {date}\n"
-        f"Time: {time}\n"
-        f"Total Price: ${total_price:.2f}"
-        f"{calendar_line}\n\n"
-        f"Thank you for booking with us 🤍"
+    base_message = tr_confirmation(
+        lang=lang,
+        name=name,
+        service=service,
+        date=date,
+        time=time,
+        total_price=total_price,
+        calendar_added=calendar_added,
+        resource_name=resource_name,
     )
 
     send_friendly_message(phone, business, lang, base_message, purpose="confirmation")
@@ -556,17 +553,16 @@ def send_reservation_cancellation(
     lang=None,
 ):
     if not lang:
-        lang = get_default_business_language(business)
+        preferred = (business.get("preferred_language") or "auto").strip().lower()
+        lang = preferred if preferred in ("en", "fr", "ar") else "en"
 
-    resource_line = f"\nWith: {resource_name}" if resource_name else ""
-
-    message = (
-        f"❌ Your reservation has been canceled.\n"
-        f"Name: {name}\n"
-        f"Service: {service}{resource_line}\n"
-        f"Date: {date}\n"
-        f"Time: {time}\n\n"
-        f"If this is a mistake, please contact us to reschedule."
+    message = tr_cancellation(
+        lang=lang,
+        name=name,
+        service=service,
+        date=date,
+        time=time,
+        resource_name=resource_name,
     )
 
     send_friendly_message(phone, business, lang, message, purpose="cancel")
@@ -701,16 +697,21 @@ def is_resource_allowed_for_service(business_id, resource_id, service_name):
 
 def apply_tone_to_text(business, text):
     tone = (business.get("assistant_tone") or "friendly").strip().lower()
-    msg = text or ""
+    msg = (text or "").strip()
 
     if tone == "professional":
         replacements = [
             ("Hi! Welcome 👋", "Hello."),
             ("Hi!", "Hello."),
+            ("Hello! Welcome 🤍", "Hello."),
             ("Sure —", "Certainly —"),
+            ("Of course —", "Certainly —"),
             ("Thanks,", "Thank you,"),
+            ("Thanks so much,", "Thank you,"),
             ("Perfect —", "Understood —"),
-            ("Thank you for booking with us 🤍", "Thank you for booking with us."),
+            ("Perfect 🤍 —", "Understood —"),
+            ("Thank you for booking with us 🤍", "Thank you for your reservation."),
+            ("If this is a mistake, please contact us to reschedule.", "If needed, please contact us to reschedule."),
             ("🤍", ""),
             ("👋", ""),
         ]
@@ -726,9 +727,13 @@ def apply_tone_to_text(business, text):
         replacements = [
             ("Hi! Welcome 👋", "Welcome."),
             ("Hi!", "Welcome."),
+            ("Hello! Welcome 🤍", "Welcome."),
             ("Sure —", "Certainly —"),
+            ("Of course —", "Certainly —"),
             ("Thanks,", "Thank you,"),
+            ("Thanks so much,", "Thank you,"),
             ("Perfect —", "Wonderful —"),
+            ("Perfect 🤍 —", "Wonderful —"),
             ("Thank you for booking with us 🤍", "We look forward to welcoming you."),
             ("👋", ""),
         ]
@@ -938,6 +943,89 @@ def tr(lang, key, **kwargs):
     return template.format(**kwargs)
 WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
+def tr_confirmation(lang, name, service, date, time, total_price, calendar_added=False, resource_name=None):
+    resource_line_map = {
+        "en": f"\nWith: {resource_name}" if resource_name else "",
+        "fr": f"\nAvec : {resource_name}" if resource_name else "",
+        "ar": f"\nمع: {resource_name}" if resource_name else "",
+    }
+
+    calendar_line_map = {
+        "en": "\n🗓 Also added to our Google Calendar." if calendar_added else "",
+        "fr": "\n🗓 Également ajouté à notre Google Calendar." if calendar_added else "",
+        "ar": "\n🗓 وتمت إضافته أيضاً إلى Google Calendar." if calendar_added else "",
+    }
+
+    messages = {
+        "en": (
+            f"✅ Your reservation is confirmed!\n"
+            f"Name: {name}\n"
+            f"Service: {service}{resource_line_map['en']}\n"
+            f"Date: {date}\n"
+            f"Time: {time}\n"
+            f"Total Price: ${total_price:.2f}"
+            f"{calendar_line_map['en']}\n\n"
+            f"Thank you for booking with us 🤍"
+        ),
+        "fr": (
+            f"✅ Votre réservation est confirmée !\n"
+            f"Nom : {name}\n"
+            f"Service : {service}{resource_line_map['fr']}\n"
+            f"Date : {date}\n"
+            f"Heure : {time}\n"
+            f"Prix total : ${total_price:.2f}"
+            f"{calendar_line_map['fr']}\n\n"
+            f"Merci pour votre réservation 🤍"
+        ),
+        "ar": (
+            f"✅ تم تأكيد حجزك!\n"
+            f"الاسم: {name}\n"
+            f"الخدمة: {service}{resource_line_map['ar']}\n"
+            f"التاريخ: {date}\n"
+            f"الوقت: {time}\n"
+            f"السعر الإجمالي: ${total_price:.2f}"
+            f"{calendar_line_map['ar']}\n\n"
+            f"شكراً لحجزك معنا 🤍"
+        ),
+    }
+
+    return messages.get(lang, messages["en"])
+
+def tr_cancellation(lang, name, service, date, time, resource_name=None):
+    resource_line_map = {
+        "en": f"\nWith: {resource_name}" if resource_name else "",
+        "fr": f"\nAvec : {resource_name}" if resource_name else "",
+        "ar": f"\nمع: {resource_name}" if resource_name else "",
+    }
+
+    messages = {
+        "en": (
+            f"❌ Your reservation has been canceled.\n"
+            f"Name: {name}\n"
+            f"Service: {service}{resource_line_map['en']}\n"
+            f"Date: {date}\n"
+            f"Time: {time}\n\n"
+            f"If this is a mistake, please contact us to reschedule."
+        ),
+        "fr": (
+            f"❌ Votre réservation a été annulée.\n"
+            f"Nom : {name}\n"
+            f"Service : {service}{resource_line_map['fr']}\n"
+            f"Date : {date}\n"
+            f"Heure : {time}\n\n"
+            f"Si c’est une erreur, veuillez nous contacter pour reprogrammer."
+        ),
+        "ar": (
+            f"❌ تم إلغاء حجزك.\n"
+            f"الاسم: {name}\n"
+            f"الخدمة: {service}{resource_line_map['ar']}\n"
+            f"التاريخ: {date}\n"
+            f"الوقت: {time}\n\n"
+            f"إذا كان هذا عن طريق الخطأ، يرجى التواصل معنا لإعادة الحجز."
+        ),
+    }
+
+    return messages.get(lang, messages["en"])
 
 def normalize_booking_date(date_str):
     tz = pytz.timezone("Asia/Beirut")

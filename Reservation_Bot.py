@@ -543,10 +543,21 @@ def send_reservation_confirmation(
         f"Thank you for booking with us 🤍"
     )
 
-    final_message = humanize_reply(lang, base_message, purpose="confirmation")
-    send_message(phone, final_message, business)
+    send_friendly_message(phone, business, lang, base_message, purpose="confirmation")
 
-def send_reservation_cancellation(phone, name, service, date, time, business, resource_name=None):
+def send_reservation_cancellation(
+    phone,
+    name,
+    service,
+    date,
+    time,
+    business,
+    resource_name=None,
+    lang=None,
+):
+    if not lang:
+        lang = get_default_business_language(business)
+
     resource_line = f"\nWith: {resource_name}" if resource_name else ""
 
     message = (
@@ -558,7 +569,7 @@ def send_reservation_cancellation(phone, name, service, date, time, business, re
         f"If this is a mistake, please contact us to reschedule."
     )
 
-    send_message(phone, message, business)
+    send_friendly_message(phone, business, lang, message, purpose="cancel")
 
 def add_reservation_to_google_calendar(
     business_id,
@@ -690,14 +701,44 @@ def is_resource_allowed_for_service(business_id, resource_id, service_name):
 
 def apply_tone_to_text(business, text):
     tone = (business.get("assistant_tone") or "friendly").strip().lower()
+    msg = text or ""
 
     if tone == "professional":
-        return text.replace("🤍", "").replace("👋", "")
+        replacements = [
+            ("Hi! Welcome 👋", "Hello."),
+            ("Hi!", "Hello."),
+            ("Sure —", "Certainly —"),
+            ("Thanks,", "Thank you,"),
+            ("Perfect —", "Understood —"),
+            ("Thank you for booking with us 🤍", "Thank you for booking with us."),
+            ("🤍", ""),
+            ("👋", ""),
+        ]
     elif tone == "warm":
-        return text.replace("Hi!", "Hello!").replace("Sure", "Of course")
+        replacements = [
+            ("Hi! Welcome 👋", "Hello! Welcome 🤍"),
+            ("Hi!", "Hello!"),
+            ("Sure —", "Of course —"),
+            ("Thanks,", "Thanks so much,"),
+            ("Perfect —", "Perfect 🤍 —"),
+        ]
     elif tone == "luxury":
-        return text.replace("Hi!", "Welcome.").replace("Sure", "Certainly")
-    return text
+        replacements = [
+            ("Hi! Welcome 👋", "Welcome."),
+            ("Hi!", "Welcome."),
+            ("Sure —", "Certainly —"),
+            ("Thanks,", "Thank you,"),
+            ("Perfect —", "Wonderful —"),
+            ("Thank you for booking with us 🤍", "We look forward to welcoming you."),
+            ("👋", ""),
+        ]
+    else:
+        replacements = []
+
+    for old, new in replacements:
+        msg = msg.replace(old, new)
+
+    return msg.strip()
 
 def get_confirmed_reservations_for_phone(business, phone):
     mark_past_reservations_done(business)
@@ -754,6 +795,26 @@ def detect_lang(text):
         return "fr"
 
     return "en"
+
+def get_default_business_language(business):
+    preferred = (business.get("preferred_language") or "auto").strip().lower()
+    if preferred in ("en", "ar", "fr"):
+        return preferred
+    return "en"
+
+
+def get_effective_language(business, text, state=None):
+    preferred = (business.get("preferred_language") or "auto").strip().lower()
+
+    # If owner chose a fixed language in the dashboard, always use it
+    if preferred in ("en", "ar", "fr"):
+        return preferred
+
+    # Otherwise keep the conversation language stable once detected
+    if state and state.get("lang") in ("en", "ar", "fr"):
+        return state["lang"]
+
+    return detect_lang(text)
 
 def is_greeting(text):
     t = (text or "").strip().lower()
@@ -1518,7 +1579,7 @@ def process_incoming_message(business, phone, text):
     key = (business["id"], phone)
     state = user_state.get(key)
 
-    lang = state.get("lang") if state and state.get("lang") else detect_lang(t)
+    lang = get_effective_language(business, t, state)
 
     # GREETING
     if is_greeting(t):
@@ -2807,9 +2868,8 @@ def update_business_settings():
 
     business_name = request.form.get("business_name", "").strip()
     timezone = request.form.get("timezone", "Asia/Beirut").strip() or "Asia/Beirut"
-
-    preferred_language = request.form.get("preferred_language", "auto").strip() or "auto"
-    assistant_tone = request.form.get("assistant_tone", "friendly").strip() or "friendly"
+    preferred_language = request.form.get("preferred_language", "auto").strip().lower() or "auto"
+    assistant_tone = request.form.get("assistant_tone", "friendly").strip().lower() or "friendly"
     custom_welcome_message = request.form.get("custom_welcome_message", "").strip()
     business_description = request.form.get("business_description", "").strip()
 

@@ -39,7 +39,7 @@ def parse_when(date_str, time_str, duration_min=45):
 
     arabic_digits_map = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
     date_str = (date_str or "").translate(arabic_digits_map).strip()
-    time_str = (time_str or "").translate(arabic_digits_map).strip()
+    time_str = (time_str or "").translate(arabic_digits_map).strip().upper().replace(".", "")
 
     month_map = {
         "كانون الثاني": "January",
@@ -76,15 +76,28 @@ def parse_when(date_str, time_str, duration_min=45):
     for ar, en in month_map.items():
         normalized_date = normalized_date.replace(ar, en)
 
-    dt_text = f"{normalized_date} {time_str}"
-    print("GCAL normalized datetime:", dt_text)
+    if time_str.endswith("AM") or time_str.endswith("PM"):
+        if len(time_str) > 2 and time_str[-3] != " ":
+            time_str = time_str[:-2] + " " + time_str[-2:]
 
-    start = dtparse.parse(dt_text, dayfirst=True, fuzzy=True)
+    parsed_time = None
+    for fmt in ("%H:%M", "%H", "%I %p", "%I:%M %p"):
+        try:
+            parsed_time = datetime.strptime(time_str, fmt).time()
+            break
+        except Exception:
+            continue
 
-    if start.tzinfo is None:
-        start = tz.localize(start)
+    if parsed_time is None:
+        raise ValueError(f"Could not parse time: {time_str}")
 
+    parsed_date = dtparse.parse(normalized_date, dayfirst=True, fuzzy=True).date()
+    start = tz.localize(datetime.combine(parsed_date, parsed_time))
     end = start + timedelta(minutes=duration_min)
+
+    print("GCAL start_iso:", start.isoformat())
+    print("GCAL end_iso:", end.isoformat())
+
     return start.isoformat(), end.isoformat()
 
 def create_event(

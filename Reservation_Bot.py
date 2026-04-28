@@ -1027,6 +1027,43 @@ def tr_cancellation(lang, name, service, date, time, resource_name=None):
 
     return messages.get(lang, messages["en"])
 
+
+def tr_resource_unavailable(lang, resource_name, date, time_, same_time_names="", nearby_text="", no_alternatives=False):
+    if lang == "fr":
+        parts = [
+            f"Désolé, {resource_name} n’est pas disponible le {date} à {time_}."
+        ]
+        if same_time_names:
+            parts.append(f"Disponible à la même heure : {same_time_names}.")
+        if nearby_text:
+            parts.append(f"Heures proches avec {resource_name} :\n{nearby_text}")
+        if no_alternatives:
+            parts.append("Aucune alternative proche n’a été trouvée.")
+        return "\n".join(parts)
+
+    if lang == "ar":
+        parts = [
+            f"عذراً، {resource_name} غير متاح بتاريخ {date} الساعة {time_}."
+        ]
+        if same_time_names:
+            parts.append(f"المتاحون في نفس الوقت: {same_time_names}.")
+        if nearby_text:
+            parts.append(f"أقرب الأوقات مع {resource_name}:\n{nearby_text}")
+        if no_alternatives:
+            parts.append("لم يتم العثور على بدائل قريبة.")
+        return "\n".join(parts)
+
+    parts = [
+        f"Sorry, {resource_name} isn’t available on {date} at {time_}."
+    ]
+    if same_time_names:
+        parts.append(f"Available at the same time: {same_time_names}.")
+    if nearby_text:
+        parts.append(f"Closest times with {resource_name}:\n{nearby_text}")
+    if no_alternatives:
+        parts.append("No nearby alternatives were found.")
+    return "\n".join(parts)
+
 def normalize_booking_date(date_str):
     tz = pytz.timezone("Asia/Beirut")
 
@@ -1842,7 +1879,6 @@ def process_incoming_message(business, phone, text):
             send_friendly_message(phone, business, lang, tr(lang, "ask_time"), purpose="ask_time")
             return "ok", 200
 
-        # Business-level day check first
         day_rules = get_day_rules(business["id"], state["date"])
         if day_rules.get("closed"):
             send_friendly_message(phone, business, lang, tr(lang, "closed_day"), purpose="availability")
@@ -1864,16 +1900,13 @@ def process_incoming_message(business, phone, text):
             send_friendly_message(phone, business, lang, tr(lang, "outside_hours"), purpose="availability")
             return "ok", 200
 
+        eligible_resources = get_active_resources_for_service(business["id"], state["service"])
+
         # --------------------------------------------------
         # RESOURCE-BASED MODE
         # --------------------------------------------------
-        eligible_resources = get_active_resources_for_service(business["id"], state["service"])
-
         if eligible_resources:
             requested_resource = extract_requested_resource_from_text(t, eligible_resources)
-
-            # If no explicit resource was requested, treat the first eligible one
-            # as the default/preferred resource instead of silently switching.
             preferred_resource = requested_resource or eligible_resources[0]
 
             preferred_rules = get_resource_day_rules(
@@ -1900,17 +1933,32 @@ def process_incoming_message(business, phone, text):
 
             if preferred_available:
                 chosen_resource = preferred_resource
-
             else:
-                same_time_options = [
-                    r for r in get_available_resources_for_slot(
+                same_time_options = []
+
+                for r in eligible_resources:
+                    if r["id"] == preferred_resource["id"]:
+                        continue
+
+                    r_rules = get_resource_day_rules(
                         business["id"],
+                        r["id"],
+                        state["date"],
+                    )
+                    if r_rules.get("closed"):
+                        continue
+
+                    if not is_time_within_business_hours(time_, r_rules["open_time"], r_rules["close_time"]):
+                        continue
+
+                    if not is_resource_slot_full(
+                        business["id"],
+                        r["id"],
                         state["date"],
                         time_,
                         state["service"],
-                    )
-                    if r["id"] != preferred_resource["id"]
-                ]
+                    ):
+                        same_time_options.append(r)
 
                 nearby_with_preferred = suggest_slots_for_resource(
                     business["id"],
@@ -1921,28 +1969,24 @@ def process_incoming_message(business, phone, text):
                     max_suggestions=3,
                 )
 
-                msg_parts = [
-                    f"Sorry, {preferred_resource['name']} isn’t available on {state['date']} at {time_}."
-                ]
+                same_time_names = ", ".join(r["name"] for r in same_time_options[:3]) if same_time_options else ""
+                nearby_text = "\n".join([f"• {slot}" for slot in nearby_with_preferred]) if nearby_with_preferred else ""
 
-                if same_time_options:
-                    same_time_names = ", ".join(r["name"] for r in same_time_options[:3])
-                    msg_parts.append(f"Available at the same time: {same_time_names}.")
-
-                if nearby_with_preferred:
-                    nearby_text = "\n".join([f"• {slot}" for slot in nearby_with_preferred])
-                    msg_parts.append(
-                        f"Closest times with {preferred_resource['name']}:\n{nearby_text}"
-                    )
-
-                if not same_time_options and not nearby_with_preferred:
-                    msg_parts.append("No nearby alternatives were found.")
+                conflict_message = tr_resource_unavailable(
+                    lang=lang,
+                    resource_name=preferred_resource["name"],
+                    date=state["date"],
+                    time_=time_,
+                    same_time_names=same_time_names,
+                    nearby_text=nearby_text,
+                    no_alternatives=(not same_time_options and not nearby_with_preferred),
+                )
 
                 send_friendly_message(
                     phone,
                     business,
                     lang,
-                    "\n".join(msg_parts),
+                    conflict_message,
                     purpose="slot_taken",
                 )
                 return "ok", 200
@@ -2019,7 +2063,7 @@ def process_incoming_message(business, phone, text):
                     phone,
                     business,
                     lang,
-                    f"Sorry, {state['date']} at {time_} is already booked.\nClosest available times:\n{suggestions_text}",
+                    f"{tr(lang, 'slot_taken', date=state['date'], time=time_)}\n{suggestions_text}",
                     purpose="slot_taken",
                 )
             else:
@@ -2027,7 +2071,7 @@ def process_incoming_message(business, phone, text):
                     phone,
                     business,
                     lang,
-                    f"Sorry, {state['date']} at {time_} is already booked and there are no nearby available times.",
+                    tr(lang, "slot_taken", date=state["date"], time=time_),
                     purpose="slot_taken",
                 )
             return "ok", 200

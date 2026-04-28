@@ -873,6 +873,70 @@ def is_cancel_intent(text):
     ]
     return any(k in t for k in cancel_keywords)
 
+def is_yes_intent(text):
+    t = (text or "").strip().lower()
+    yes_keywords = {
+        "yes", "yeah", "yep", "ok", "okay", "sure", "of course",
+        "oui", "d'accord", "dakhel", "تمام", "اي", "نعم", "اوكي", "أكيد", "اكيد"
+    }
+    return t in yes_keywords or any(k == t for k in yes_keywords)
+
+
+def is_no_intent(text):
+    t = (text or "").strip().lower()
+    no_keywords = {
+        "no", "nope", "nah",
+        "non",
+        "لا", "لأ", "مش", "مش هيدا", "لا شكرا", "لا شكراً"
+    }
+    return t in no_keywords or any(k == t for k in no_keywords)
+
+
+def tr_switch_offer(lang, preferred_name, offered_name, date_, time_, nearby_text=""):
+    if lang == "fr":
+        msg = (
+            f"{preferred_name} n’est pas disponible le {date_} à {time_}.\n"
+            f"{offered_name} est disponible à la même heure.\n"
+            f"Voulez-vous réserver avec {offered_name} ?"
+        )
+        if nearby_text:
+            msg += f"\n\nHeures proches avec {preferred_name} :\n{nearby_text}"
+        return msg
+
+    if lang == "ar":
+        msg = (
+            f"{preferred_name} غير متاح بتاريخ {date_} الساعة {time_}.\n"
+            f"{offered_name} متاح بنفس الوقت.\n"
+            f"بدك أحجز مع {offered_name}؟"
+        )
+        if nearby_text:
+            msg += f"\n\nأقرب الأوقات مع {preferred_name}:\n{nearby_text}"
+        return msg
+
+    msg = (
+        f"{preferred_name} isn’t available on {date_} at {time_}.\n"
+        f"{offered_name} is available at the same time.\n"
+        f"Would you like to book with {offered_name} instead?"
+    )
+    if nearby_text:
+        msg += f"\n\nClosest times with {preferred_name}:\n{nearby_text}"
+    return msg
+
+
+def tr_switch_declined(lang, preferred_name, nearby_text=""):
+    if lang == "fr":
+        if nearby_text:
+            return f"D’accord — voici les heures proches avec {preferred_name} :\n{nearby_text}"
+        return f"D’accord — aucune heure proche n’a été trouvée avec {preferred_name}."
+
+    if lang == "ar":
+        if nearby_text:
+            return f"أكيد — هيدي أقرب الأوقات مع {preferred_name}:\n{nearby_text}"
+        return f"أكيد — ما لقينا أوقات قريبة مع {preferred_name}."
+
+    if nearby_text:
+        return f"Okay — here are the closest times with {preferred_name}:\n{nearby_text}"
+    return f"Okay — no nearby times were found with {preferred_name}."
 
 def tr(lang, key, **kwargs):
     messages = {
@@ -1754,6 +1818,104 @@ def process_incoming_message(business, phone, text):
         )
         return "ok", 200
 
+    # STEP X – ALTERNATIVE RESOURCE CONFIRMATION
+    if state and state.get("step") == "awaiting_alternative_confirmation":
+        lang = state.get("lang", lang)
+        offer = state.get("alternative_offer") or {}
+
+        offered_resource_name = offer.get("offered_resource_name", "")
+        preferred_resource_name = offer.get("preferred_resource_name", "")
+        nearby_slots = offer.get("nearby_slots") or []
+
+        user_text_lower = t.lower().strip()
+
+        accepted = (
+            is_yes_intent(t)
+            or (offered_resource_name and offered_resource_name.lower() in user_text_lower)
+        )
+
+        if accepted:
+            try:
+                reservation_id = save_reservation(
+                    business["id"],
+                    phone,
+                    state.get("name", ""),
+                    state.get("service", ""),
+                    state.get("date", ""),
+                    state.get("time", ""),
+                    resource_id=offer.get("offered_resource_id"),
+                    resource_name_snapshot=offered_resource_name,
+                )
+                print("Reservation saved with id:", reservation_id)
+
+                gcal_event = add_reservation_to_google_calendar(
+                    business["id"],
+                    state.get("name", ""),
+                    state.get("service", ""),
+                    state.get("date", ""),
+                    state.get("time", ""),
+                    resource_name=offered_resource_name,
+                    resource_id=offer.get("offered_resource_id"),
+                )
+
+                if gcal_event:
+                    event_id = gcal_event.get("id")
+                    print("Reservation added to Google Calendar:", event_id)
+                    if event_id:
+                        save_google_event_id(reservation_id, event_id)
+                else:
+                    print("Google Calendar event was not created")
+
+                send_reservation_confirmation(
+                    phone,
+                    state.get("name", ""),
+                    state.get("service", ""),
+                    state.get("date", ""),
+                    state.get("time", ""),
+                    business,
+                    calendar_added=bool(gcal_event),
+                    lang=lang,
+                    resource_name=offered_resource_name,
+                )
+
+                user_state.pop(key, None)
+                return "ok", 200
+
+            except Exception as e:
+                print("STEP alternative confirmation save error:", str(e))
+                send_friendly_message(phone, business, lang, tr(lang, "save_error"), purpose="error")
+                return "ok", 200
+
+        if is_no_intent(t):
+            nearby_text = "\n".join([f"• {slot}" for slot in nearby_slots]) if nearby_slots else ""
+            send_friendly_message(
+                phone,
+                business,
+                lang,
+                tr_switch_declined(lang, preferred_resource_name, nearby_text),
+                purpose="slot_taken",
+            )
+
+            state["step"] = "awaiting_time"
+            state.pop("alternative_offer", None)
+            return "ok", 200
+
+        # unclear answer → ask again
+        repeat_map = {
+            "en": f"Please reply yes to book with {offered_resource_name}, or no to see other times.",
+            "fr": f"Veuillez répondre oui pour réserver avec {offered_resource_name}, ou non pour voir d’autres heures.",
+            "ar": f"من فضلك جاوب نعم لنحجز مع {offered_resource_name}، أو لا لنشوف أوقات تانية.",
+        }
+
+        send_friendly_message(
+            phone,
+            business,
+            lang,
+            repeat_map.get(lang, repeat_map["en"]),
+            purpose="slot_taken",
+        )
+        return "ok", 200
+
     # STEP 1 – NAME
     if state and state.get("step") == "awaiting_name":
         lang = state.get("lang", lang)
@@ -1954,32 +2116,17 @@ def process_incoming_message(business, phone, text):
 
             if preferred_available:
                 chosen_resource = preferred_resource
+
             else:
-                same_time_options = []
-
-                for r in eligible_resources:
-                    if r["id"] == preferred_resource["id"]:
-                        continue
-
-                    r_rules = get_resource_day_rules(
+                same_time_options = [
+                    r for r in get_available_resources_for_slot(
                         business["id"],
-                        r["id"],
-                        state["date"],
-                    )
-                    if r_rules.get("closed"):
-                        continue
-
-                    if not is_time_within_business_hours(time_, r_rules["open_time"], r_rules["close_time"]):
-                        continue
-
-                    if not is_resource_slot_full(
-                        business["id"],
-                        r["id"],
                         state["date"],
                         time_,
                         state["service"],
-                    ):
-                        same_time_options.append(r)
+                    )
+                    if r["id"] != preferred_resource["id"]
+                ]
 
                 nearby_with_preferred = suggest_slots_for_resource(
                     business["id"],
@@ -1990,24 +2137,44 @@ def process_incoming_message(business, phone, text):
                     max_suggestions=3,
                 )
 
-                same_time_names = ", ".join(r["name"] for r in same_time_options[:3]) if same_time_options else ""
-                nearby_text = "\n".join([f"• {slot}" for slot in nearby_with_preferred]) if nearby_with_preferred else ""
+                # If another resource is available at the same time,
+                # ask for confirmation instead of silently switching.
+                if same_time_options:
+                    offered_resource = same_time_options[0]
+                    nearby_text = "\n".join([f"• {slot}" for slot in nearby_with_preferred]) if nearby_with_preferred else ""
 
-                conflict_message = tr_resource_unavailable(
-                    lang=lang,
-                    resource_name=preferred_resource["name"],
-                    date=state["date"],
-                    time_=time_,
-                    same_time_names=same_time_names,
-                    nearby_text=nearby_text,
-                    no_alternatives=(not same_time_options and not nearby_with_preferred),
-                )
+                    state["step"] = "awaiting_alternative_confirmation"
+                    state["alternative_offer"] = {
+                        "preferred_resource_name": preferred_resource["name"],
+                        "offered_resource_id": offered_resource["id"],
+                        "offered_resource_name": offered_resource["name"],
+                        "nearby_slots": nearby_with_preferred,
+                    }
+
+                    send_friendly_message(
+                        phone,
+                        business,
+                        lang,
+                        tr_switch_offer(
+                            lang,
+                            preferred_resource["name"],
+                            offered_resource["name"],
+                            state["date"],
+                            time_,
+                            nearby_text=nearby_text,
+                        ),
+                        purpose="slot_taken",
+                    )
+                    return "ok", 200
+
+                # Otherwise only show nearby times with the preferred resource
+                nearby_text = "\n".join([f"• {slot}" for slot in nearby_with_preferred]) if nearby_with_preferred else ""
 
                 send_friendly_message(
                     phone,
                     business,
                     lang,
-                    conflict_message,
+                    tr_switch_declined(lang, preferred_resource["name"], nearby_text),
                     purpose="slot_taken",
                 )
                 return "ok", 200

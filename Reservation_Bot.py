@@ -314,6 +314,11 @@ def format_service_list(business_id):
         return ""
     return ", ".join(services)
 
+def format_service_bullets_for_business(business_id):
+    services = get_service_names_for_business(business_id)
+    if not services:
+        return "• No services configured yet"
+    return "\n".join([f"• {s}" for s in services])
 
 def normalize_time_str(tstr: str):
     tstr = tstr.strip().upper().replace(".", "")
@@ -1761,11 +1766,19 @@ def process_incoming_message(business, phone, text):
         state["name"] = t
         state["step"] = "awaiting_service"
 
+        services_text = format_service_bullets_for_business(business["id"])
+
+        service_prompt_map = {
+            "en": f"Thanks, {t}. Which service would you like?\nAvailable services:\n{services_text}",
+            "fr": f"Merci, {t}. Quel service souhaitez-vous ?\nServices disponibles :\n{services_text}",
+            "ar": f"شكراً {t}. أي خدمة بدك؟\nالخدمات المتوفرة:\n{services_text}",
+        }
+
         send_friendly_message(
             phone,
             business,
             lang,
-            tr(lang, "ask_service", name=t),
+            service_prompt_map.get(lang, service_prompt_map["en"]),
             purpose="ask_service",
         )
         return "ok", 200
@@ -1831,12 +1844,20 @@ def process_incoming_message(business, phone, text):
         state["service"] = valid_service
         state["step"] = "awaiting_date"
 
+        services_text = format_service_bullets_for_business(business["id"])
+
+        service_prompt_map = {
+            "en": f"Thanks, {state.get('name', '')}. Which service would you like?\nAvailable services:\n{services_text}",
+            "fr": f"Merci, {state.get('name', '')}. Quel service souhaitez-vous ?\nServices disponibles :\n{services_text}",
+            "ar": f"شكراً {state.get('name', '')}. أي خدمة بدك؟\nالخدمات المتوفرة:\n{services_text}",
+        }
+
         send_friendly_message(
             phone,
             business,
             lang,
-            tr(lang, "ask_date", service=valid_service),
-            purpose="ask_date",
+            service_prompt_map.get(lang, service_prompt_map["en"]),
+            purpose="ask_service",
         )
         return "ok", 200
 

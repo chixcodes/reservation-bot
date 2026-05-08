@@ -213,6 +213,7 @@ def parse_when(date_str, time_str, duration_min=45):
 
 
 def create_event(
+
     summary,
     date_str,
     time_str,
@@ -234,6 +235,11 @@ def create_event(
         body["colorId"] = str(color_id)
 
     print("GCAL event body:", body)
+    print("GCAL create_event calendar_id:", calendar_id, flush=True)
+    created = svc.events().insert(calendarId=calendar_id, body=body).execute()
+    print("GCAL created event id:", created.get("id"), flush=True)
+    print("GCAL created event htmlLink:", created.get("htmlLink"), flush=True)
+    return created
     return svc.events().insert(calendarId=calendar_id, body=body).execute()
 
 

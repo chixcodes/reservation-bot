@@ -608,15 +608,18 @@ def add_reservation_to_google_calendar(
         )
 
         try:
+            calendar_id = (get_business_by_id(business_id) or {}).get("calendar_id") or "primary"
+            print("GCAL target calendar_id:", calendar_id, flush=True)
             event = create_event(
                 summary=summary,
                 date_str=date,
                 time_str=time_,
                 description=description,
-                calendar_id="primary",
+                calendar_id=calendar_id,
                 duration_min=duration_min,
                 color_id=color_id,
             )
+
         except TypeError:
             # fallback if your gcal.py wrapper does not yet support color_id
             event = create_event(

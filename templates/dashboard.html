@@ -157,7 +157,7 @@
                             <h2 class="font-semibold text-lg">Add Reservation Manually</h2>
                             <p class="text-sm text-slate-500">For phone calls, walk-ins, or staff-created bookings.</p>
                         </div>
-                        <form method="post" action="/reservations/add-manual" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+                        <form method="post" action="/reservations/manual-add" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
                             <div>
                                 <label class="block text-sm font-medium mb-2">Customer Name</label>
                                 <input name="customer_name" required class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
@@ -196,7 +196,7 @@
                             </div>
                             <div class="md:col-span-2">
                                 <label class="block text-sm font-medium mb-2">Notes</label>
-                                <input name="note" placeholder="Optional note" class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                <input name="notes" placeholder="Optional note" class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
                             </div>
                             <div class="xl:col-span-4">
                                 <button type="submit" class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-5 rounded-xl">

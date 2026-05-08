@@ -662,6 +662,148 @@ def update_reservation_note_value(reservation_id, business_id, note):
     conn.commit()
     conn.close()
 
+def get_manual_reservation_resource_choice(business_id, service_name, resource_id_raw, date_iso, time_):
+    """
+    Returns:
+      (resource_row_or_none, error_message_or_none)
+    """
+    resource_id_raw = (resource_id_raw or "").strip()
+
+    # Auto-assign if no specific resource selected
+    if not resource_id_raw or resource_id_raw == "auto":
+        eligible_resources = get_active_resources_for_service(business_id, service_name)
+        for r in eligible_resources:
+            rules = get_resource_day_rules(business_id, r["id"], date_iso)
+            if rules.get("closed"):
+                continue
+            if not is_time_within_business_hours(time_, rules["open_time"], rules["close_time"]):
+                continue
+            if not is_resource_slot_full(business_id, r["id"], date_iso, time_, service_name):
+                return r, None
+        return None, "No available staff/resource at that time."
+
+    try:
+        resource_id = int(resource_id_raw)
+    except Exception:
+        return None, "Invalid resource selected."
+
+    resource = get_resource_by_id(resource_id, business_id)
+    if not resource:
+        return None, "Selected resource was not found."
+
+    if not resource.get("is_active"):
+        return None, "Selected resource is inactive."
+
+    if not is_resource_allowed_for_service(business_id, resource_id, service_name):
+        return None, "Selected resource cannot perform that service."
+
+    rules = get_resource_day_rules(business_id, resource_id, date_iso)
+    if rules.get("closed"):
+        return None, "Selected resource is unavailable on that date."
+
+    if not is_time_within_business_hours(time_, rules["open_time"], rules["close_time"]):
+        return None, "Selected resource is outside working hours at that time."
+
+    if is_resource_slot_full(business_id, resource_id, date_iso, time_, service_name):
+        return None, "Selected resource is already booked at that time."
+
+    return resource, None
+
+
+@app.route("/reservations/manual-add", methods=["POST"])
+def manual_add_reservation():
+    if "business_id" not in session:
+        return redirect("/login")
+
+    business_id = session["business_id"]
+
+    customer_name = (request.form.get("customer_name") or "").strip()
+    customer_phone = (request.form.get("customer_phone") or "").strip()
+    service = (request.form.get("service") or "").strip()
+    date_iso = (request.form.get("date") or "").strip()
+    time_raw = (request.form.get("time") or "").strip()
+    resource_id_raw = (request.form.get("resource_id") or "auto").strip()
+    notes = (request.form.get("notes") or "").strip()
+
+    if not customer_name or not service or not date_iso or not time_raw:
+        return redirect("/dashboard?tab=reservations")
+
+    business = get_business_by_id(business_id)
+    if not business:
+        return redirect("/dashboard?tab=reservations")
+
+    valid_service, _ = validate_service_for_business(business_id, service)
+    if not valid_service:
+        return redirect("/dashboard?tab=reservations")
+
+    normalized_time = normalize_time_str_with_hours(time_raw)
+    if not normalized_time:
+        return redirect("/dashboard?tab=reservations")
+
+    day_rules = get_day_rules(business_id, date_iso)
+    if day_rules.get("closed"):
+        return redirect("/dashboard?tab=reservations")
+
+    if not is_time_within_business_hours(
+        normalized_time,
+        day_rules["open_time"],
+        day_rules["close_time"],
+    ):
+        return redirect("/dashboard?tab=reservations")
+
+    chosen_resource = None
+    eligible_resources = get_active_resources_for_service(business_id, valid_service)
+
+    if eligible_resources:
+        chosen_resource, error_message = get_manual_reservation_resource_choice(
+            business_id,
+            valid_service,
+            resource_id_raw,
+            date_iso,
+            normalized_time,
+        )
+        if error_message:
+            print("manual_add_reservation:", error_message)
+            return redirect("/dashboard?tab=reservations")
+    else:
+        if is_slot_taken(business_id, date_iso, normalized_time, valid_service):
+            print("manual_add_reservation: business-wide slot already taken")
+            return redirect("/dashboard?tab=reservations")
+
+    try:
+        reservation_id = save_reservation(
+            business_id,
+            customer_phone,
+            customer_name,
+            valid_service,
+            date_iso,
+            normalized_time,
+            resource_id=chosen_resource["id"] if chosen_resource else None,
+            resource_name_snapshot=chosen_resource["name"] if chosen_resource else None,
+        )
+
+        if notes:
+            update_reservation_note_value(reservation_id, business_id, notes)
+
+        gcal_event = add_reservation_to_google_calendar(
+            business_id,
+            customer_name,
+            valid_service,
+            date_iso,
+            normalized_time,
+            resource_name=chosen_resource["name"] if chosen_resource else None,
+            resource_id=chosen_resource["id"] if chosen_resource else None,
+        )
+
+        if gcal_event:
+            event_id = gcal_event.get("id")
+            if event_id:
+                save_google_event_id(reservation_id, event_id)
+
+    except Exception as e:
+        print("manual_add_reservation error:", str(e))
+
+    return redirect("/dashboard?tab=reservations")
 
 def is_resource_allowed_for_service(business_id, resource_id, service_name):
     service_row = get_service_row_for_business(business_id, service_name)

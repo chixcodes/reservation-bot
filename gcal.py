@@ -1,5 +1,8 @@
 # gcal.py
 import os
+import json
+import tempfile
+import atexit
 from datetime import datetime, timedelta
 import pytz
 from dateutil import parser as dtparse
@@ -10,26 +13,134 @@ from google.auth.transport.requests import Request
 
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 TIMEZONE = "Asia/Beirut"
+_TEMP_FILES = []
 
-def _service():
-    creds = None
 
-    # Load existing token if it exists
+def _cleanup_temp_files():
+    for path in _TEMP_FILES:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
+
+
+atexit.register(_cleanup_temp_files)
+
+
+def _is_render_environment():
+    return bool(
+        os.getenv("RENDER")
+        or os.getenv("RENDER_SERVICE_ID")
+        or os.getenv("RENDER_EXTERNAL_URL")
+    )
+
+
+def _get_credentials_file_path():
+    env_json = (os.getenv("GOOGLE_CREDENTIALS_JSON") or "").strip()
+    if env_json:
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix="_google_credentials.json")
+        tmp.write(env_json.encode("utf-8"))
+        tmp.flush()
+        tmp.close()
+        _TEMP_FILES.append(tmp.name)
+        return tmp.name, "env_json"
+
+    env_path = (os.getenv("GOOGLE_CREDENTIALS_PATH") or "").strip()
+    if env_path and os.path.exists(env_path):
+        return env_path, "env_path"
+
+    if os.path.exists("credentials.json"):
+        return "credentials.json", "local_file"
+
+    return None, None
+
+
+def _load_token_credentials():
+    env_token_json = (os.getenv("GOOGLE_TOKEN_JSON") or "").strip()
+    if env_token_json:
+        try:
+            info = json.loads(env_token_json)
+            return Credentials.from_authorized_user_info(info, SCOPES), "env_json", None
+        except Exception as e:
+            print("GCAL token env parse error:", e)
+
+    env_token_path = (os.getenv("GOOGLE_TOKEN_PATH") or "").strip()
+    if env_token_path and os.path.exists(env_token_path):
+        return Credentials.from_authorized_user_file(env_token_path, SCOPES), "env_path", env_token_path
+
     if os.path.exists("token.json"):
-        creds = Credentials.from_authorized_user_file("token.json", SCOPES)
+        return Credentials.from_authorized_user_file("token.json", SCOPES), "local_file", "token.json"
 
-    # If no creds or invalid, refresh or do full OAuth
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            # FIX: pass a Request() object here
+    return None, None, None
+
+
+def get_calendar_connection_status():
+    creds, token_source, _ = _load_token_credentials()
+    credentials_path, credentials_source = _get_credentials_file_path()
+
+    if not creds:
+        if credentials_path:
+            return False, "No Google token found on the server. Add token.json or GOOGLE_TOKEN_JSON."
+        return False, "Missing Google credentials.json and token.json on the server."
+
+    try:
+        if creds.valid:
+            return True, f"Connected via {token_source or 'token'}"
+        if creds.expired and creds.refresh_token:
+            return True, f"Refreshable token via {token_source or 'token'}"
+        return False, "Google token exists but is not valid and cannot be refreshed."
+    except Exception as e:
+        return False, f"Google Calendar status check failed: {e}"
+
+
+def is_google_calendar_connected():
+    connected, _ = get_calendar_connection_status()
+    return connected
+
+
+def _service(allow_interactive=False):
+    creds, token_source, token_path = _load_token_credentials()
+    credentials_path, credentials_source = _get_credentials_file_path()
+
+    print(
+        "GCAL credential sources:",
+        {
+            "token_source": token_source,
+            "credentials_source": credentials_source,
+            "render": _is_render_environment(),
+        },
+    )
+
+    if creds and not creds.valid:
+        if creds.expired and creds.refresh_token:
+            print("GCAL refreshing expired token")
             creds.refresh(Request())
+            if token_path:
+                try:
+                    with open(token_path, "w") as f:
+                        f.write(creds.to_json())
+                except Exception as e:
+                    print("GCAL token save warning:", e)
         else:
-            flow = InstalledAppFlow.from_client_secrets_file("credentials.json", SCOPES)
-            creds = flow.run_local_server(port=0)
+            creds = None
 
-        # Save token
-        with open("token.json", "w") as f:
-            f.write(creds.to_json())
+    if not creds:
+        if not allow_interactive or _is_render_environment():
+            connected, reason = get_calendar_connection_status()
+            raise RuntimeError(reason)
+
+        if not credentials_path:
+            raise RuntimeError("Missing credentials.json for Google Calendar OAuth.")
+
+        flow = InstalledAppFlow.from_client_secrets_file(credentials_path, SCOPES)
+        creds = flow.run_local_server(port=0)
+
+        try:
+            with open("token.json", "w") as f:
+                f.write(creds.to_json())
+        except Exception as e:
+            print("GCAL token save warning:", e)
 
     return build("calendar", "v3", credentials=creds)
 
@@ -100,6 +211,7 @@ def parse_when(date_str, time_str, duration_min=45):
 
     return start.isoformat(), end.isoformat()
 
+
 def create_event(
     summary,
     date_str,
@@ -109,22 +221,24 @@ def create_event(
     duration_min=45,
     color_id=None,
 ):
-    svc = _service()
+    svc = _service(allow_interactive=False)
     start_iso, end_iso = parse_when(date_str, time_str, duration_min)
     body = {
         "summary": summary,
         "description": description,
         "start": {"dateTime": start_iso, "timeZone": TIMEZONE},
-        "end":   {"dateTime": end_iso,   "timeZone": TIMEZONE},
+        "end": {"dateTime": end_iso, "timeZone": TIMEZONE},
     }
 
     if color_id:
         body["colorId"] = str(color_id)
 
+    print("GCAL event body:", body)
     return svc.events().insert(calendarId=calendar_id, body=body).execute()
 
+
 def delete_event(event_id, calendar_id="primary"):
-    svc = _service()
+    svc = _service(allow_interactive=False)
     try:
         svc.events().delete(calendarId=calendar_id, eventId=event_id).execute()
         print(f"Google Calendar event deleted: {event_id}")

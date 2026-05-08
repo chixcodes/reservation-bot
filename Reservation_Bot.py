@@ -8,7 +8,7 @@ import json
 from datetime import datetime, timedelta
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from gcal import create_event, delete_event
+from gcal import create_event, delete_event, is_google_calendar_connected, get_calendar_connection_status
 from dotenv import load_dotenv
 from flask import (
     Flask,
@@ -719,11 +719,7 @@ def dashboard_redirect_with_toast(message=None, toast_type="info", tab="reservat
 
 
 def should_attempt_calendar_sync(business):
-    if business.get("gcal_credentials"):
-        return True
-    if os.path.exists("token.json") and os.path.exists("credentials.json"):
-        return True
-    return False
+    return is_google_calendar_connected()
 
 
 def _handle_manual_add_reservation():
@@ -803,7 +799,9 @@ def _handle_manual_add_reservation():
         if notes:
             update_reservation_note_value(reservation_id, business_id, notes)
 
-        if should_attempt_calendar_sync(business):
+        calendar_connected, calendar_reason = get_calendar_connection_status()
+
+        if calendar_connected:
             calendar_started = time.perf_counter()
             gcal_event = add_reservation_to_google_calendar(
                 business_id,
@@ -823,7 +821,7 @@ def _handle_manual_add_reservation():
             else:
                 calendar_warning = "Reservation saved, but Google Calendar sync failed. Check the server logs."
         else:
-            calendar_warning = "Reservation saved, but Google Calendar is not connected."
+            calendar_warning = f"Reservation saved, but Google Calendar is not connected. {calendar_reason}"
 
     except Exception as e:
         print("manual_add_reservation error:", str(e))
@@ -3283,7 +3281,7 @@ def dashboard():
         blocked_dates=blocked_dates,
         weekday_names=WEEKDAY_NAMES,
         active_tab=request.args.get("tab", "reservations"),
-        google_calendar_connected=bool(business.get("gcal_credentials")),
+        google_calendar_connected=is_google_calendar_connected(),
         whatsapp_connected=bool(business.get("access_token")),
         is_support=is_support_user(),
         dashboard_metrics=dashboard_metrics,
@@ -3292,6 +3290,7 @@ def dashboard():
         status_filter=status_filter or "ALL",
         toast=toast,
         toast_type=toast_type,
+        google_calendar_reason=get_calendar_connection_status()[1],
     )
 
 @app.route("/cancel/<int:reservation_id>")

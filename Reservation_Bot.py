@@ -778,115 +778,71 @@ def should_attempt_calendar_sync(business):
         return True
     return False
 
-
 def _handle_manual_add_reservation():
     if "business_id" not in session:
         return redirect("/login")
 
     started_at = time.perf_counter()
-    business_id = session["business_id"]
-
-    customer_name = (request.form.get("customer_name") or "").strip()
-    customer_phone = (request.form.get("customer_phone") or "").strip()
-    service = (request.form.get("service") or "").strip()
-    date_iso = (request.form.get("date") or "").strip()
-    time_raw = (request.form.get("time") or "").strip()
-    resource_id_raw = (request.form.get("resource_id") or "auto").strip()
-    notes = (request.form.get("notes") or request.form.get("note") or "").strip()
-
-    if not customer_name or not service or not date_iso or not time_raw:
-        return dashboard_redirect_with_toast("Please fill in all required fields.", "error")
-
-    business = get_business_by_id(business_id)
-    if not business:
-        return dashboard_redirect_with_toast("Business not found.", "error")
-
-    valid_service, _ = validate_service_for_business(business_id, service)
-    if not valid_service:
-        return dashboard_redirect_with_toast("Selected service is not valid.", "error")
-
-    normalized_time = normalize_time_str_with_hours(time_raw)
-    if not normalized_time:
-        return dashboard_redirect_with_toast("Please choose a valid time.", "error")
-
-    day_rules = get_day_rules(business_id, date_iso)
-    if day_rules.get("closed"):
-        return dashboard_redirect_with_toast("This date is closed for reservations.", "error")
-
-    if not is_time_within_business_hours(
-        normalized_time,
-        day_rules["open_time"],
-        day_rules["close_time"],
-    ):
-        return dashboard_redirect_with_toast("That time is outside business hours.", "error")
-
-    chosen_resource = None
-    eligible_resources = get_active_resources_for_service(business_id, valid_service)
-
-    if eligible_resources:
-        resource_ids = [r["id"] for r in eligible_resources]
-        reservations_by_resource = get_confirmed_resource_reservations_for_date(business_id, date_iso, resource_ids)
-        duration_cache = {}
-
-        if not resource_id_raw or resource_id_raw == "auto":
-            for r in eligible_resources:
-                rules = get_resource_day_rules(business_id, r["id"], date_iso)
-                if rules.get("closed"):
-                    continue
-                if not is_time_within_business_hours(normalized_time, rules["open_time"], rules["close_time"]):
-                    continue
-                if not is_resource_slot_full_from_prefetched(
-                    business_id,
-                    r,
-                    normalized_time,
-                    valid_service,
-                    reservations_by_resource,
-                    duration_cache,
-                ):
-                    chosen_resource = r
-                    break
-
-            if not chosen_resource:
-                return dashboard_redirect_with_toast("This time slot is already taken.", "error")
-        else:
-            try:
-                resource_id = int(resource_id_raw)
-            except Exception:
-                return dashboard_redirect_with_toast("Invalid resource selected.", "error")
-
-            resource_map = {r["id"]: r for r in eligible_resources}
-            chosen_resource = resource_map.get(resource_id)
-            if not chosen_resource:
-                chosen_resource = get_resource_by_id(resource_id, business_id)
-                if not chosen_resource:
-                    return dashboard_redirect_with_toast("Selected resource was not found.", "error")
-                if not chosen_resource.get("is_active"):
-                    return dashboard_redirect_with_toast("Selected resource is inactive.", "error")
-                if not is_resource_allowed_for_service(business_id, resource_id, valid_service):
-                    return dashboard_redirect_with_toast("Selected resource cannot perform that service.", "error")
-
-            rules = get_resource_day_rules(business_id, chosen_resource["id"], date_iso)
-            if rules.get("closed"):
-                return dashboard_redirect_with_toast("Selected resource is unavailable on that date.", "error")
-            if not is_time_within_business_hours(normalized_time, rules["open_time"], rules["close_time"]):
-                return dashboard_redirect_with_toast("Selected resource is outside working hours at that time.", "error")
-            if is_resource_slot_full_from_prefetched(
-                business_id,
-                chosen_resource,
-                normalized_time,
-                valid_service,
-                reservations_by_resource,
-                duration_cache,
-            ):
-                return dashboard_redirect_with_toast("This time slot is already taken.", "error")
-    else:
-        if is_slot_taken(business_id, date_iso, normalized_time, valid_service):
-            print("manual_add_reservation: business-wide slot already taken")
-            return dashboard_redirect_with_toast("This time slot is already taken.", "error")
-
-    calendar_warning = None
+    calendar_seconds = None
 
     try:
+        business_id = session["business_id"]
+
+        customer_name = (request.form.get("customer_name") or "").strip()
+        customer_phone = (request.form.get("customer_phone") or "").strip()
+        service = (request.form.get("service") or "").strip()
+        date_iso = (request.form.get("date") or "").strip()
+        time_raw = (request.form.get("time") or "").strip()
+        resource_id_raw = (request.form.get("resource_id") or "auto").strip()
+        notes = (request.form.get("notes") or request.form.get("note") or "").strip()
+
+        if not customer_name or not service or not date_iso or not time_raw:
+            return dashboard_redirect_with_toast("Please fill in all required fields.", "error")
+
+        business = get_business_by_id(business_id)
+        if not business:
+            return dashboard_redirect_with_toast("Business not found.", "error")
+
+        valid_service, _ = validate_service_for_business(business_id, service)
+        if not valid_service:
+            return dashboard_redirect_with_toast("Selected service is not valid.", "error")
+
+        normalized_time = normalize_time_str_with_hours(time_raw)
+        if not normalized_time:
+            return dashboard_redirect_with_toast("Please choose a valid time.", "error")
+
+        day_rules = get_day_rules(business_id, date_iso)
+        if day_rules.get("closed"):
+            return dashboard_redirect_with_toast("This date is closed for reservations.", "error")
+
+        if not is_time_within_business_hours(
+            normalized_time,
+            day_rules["open_time"],
+            day_rules["close_time"],
+        ):
+            return dashboard_redirect_with_toast("That time is outside business hours.", "error")
+
+        chosen_resource = None
+        eligible_resources = get_active_resources_for_service(business_id, valid_service)
+
+        if eligible_resources:
+            chosen_resource, error_message = get_manual_reservation_resource_choice(
+                business_id,
+                valid_service,
+                resource_id_raw,
+                date_iso,
+                normalized_time,
+            )
+            if error_message:
+                print("manual_add_reservation:", error_message, flush=True)
+                return dashboard_redirect_with_toast(error_message, "error")
+        else:
+            if is_slot_taken(business_id, date_iso, normalized_time, valid_service):
+                print("manual_add_reservation: business-wide slot already taken", flush=True)
+                return dashboard_redirect_with_toast("This time slot is already taken.", "error")
+
+        calendar_warning = None
+
         reservation_id = save_reservation(
             business_id,
             customer_phone,
@@ -912,7 +868,7 @@ def _handle_manual_add_reservation():
                 resource_name=chosen_resource["name"] if chosen_resource else None,
                 resource_id=chosen_resource["id"] if chosen_resource else None,
             )
-            print(f"manual_add_reservation calendar_seconds: {time.perf_counter() - calendar_started:.3f}")
+            calendar_seconds = time.perf_counter() - calendar_started
 
             if gcal_event:
                 event_id = gcal_event.get("id")
@@ -923,16 +879,20 @@ def _handle_manual_add_reservation():
         else:
             calendar_warning = "Reservation saved, but Google Calendar is not connected."
 
+        if calendar_warning:
+            return dashboard_redirect_with_toast(calendar_warning, "warning")
+
+        return dashboard_redirect_with_toast("Reservation added successfully.", "success")
+
     except Exception as e:
-        print("manual_add_reservation error:", str(e))
+        print("manual_add_reservation error:", str(e), flush=True)
         return dashboard_redirect_with_toast("Reservation could not be saved. Please check the server logs.", "error")
 
-    print(f"manual_add_reservation total_seconds: {time.perf_counter() - started_at:.3f}")
-
-    if calendar_warning:
-        return dashboard_redirect_with_toast(calendar_warning, "warning")
-
-    return dashboard_redirect_with_toast("Reservation added successfully.", "success")
+    finally:
+        total_seconds = time.perf_counter() - started_at
+        print(f"manual_add_reservation total_seconds: {total_seconds:.3f}", flush=True)
+        if calendar_seconds is not None:
+            print(f"manual_add_reservation calendar_seconds: {calendar_seconds:.3f}", flush=True)
 
 @app.route("/reservations/manual-add", methods=["POST"])
 def manual_add_reservation():

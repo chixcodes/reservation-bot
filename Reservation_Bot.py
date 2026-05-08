@@ -34,6 +34,7 @@ processing_message_ids = {}
 PROCESSED_MESSAGE_TTL = 60 * 60   # 1 hour
 PROCESSING_MESSAGE_TTL = 60        # 1 minute
 
+print("=== EZRESERVE PATCH MARKER V999 ===", flush=True)
 
 def cleanup_message_tracking():
     now = time.time()
@@ -838,7 +839,7 @@ def _handle_manual_add_reservation():
 @app.route("/reservations/manual-add", methods=["POST"])
 def manual_add_reservation():
     return _handle_manual_add_reservation()
-
+    print("=== MANUAL ADD PATCHED ROUTE V999 ===", flush=True)
 def is_resource_allowed_for_service(business_id, resource_id, service_name):
     service_row = get_service_row_for_business(business_id, service_name)
     if not service_row:

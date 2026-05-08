@@ -10,6 +10,7 @@ from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
+import re
 
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 TIMEZONE = "Asia/Beirut"
@@ -202,7 +203,10 @@ def parse_when(date_str, time_str, duration_min=45):
     if parsed_time is None:
         raise ValueError(f"Could not parse time: {time_str}")
 
-    parsed_date = dtparse.parse(normalized_date, dayfirst=True, fuzzy=True).date()
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", normalized_date):
+        parsed_date = datetime.strptime(normalized_date, "%Y-%m-%d").date()
+    else:
+        parsed_date = dtparse.parse(normalized_date, dayfirst=True, fuzzy=True).date()
     start = tz.localize(datetime.combine(parsed_date, parsed_time))
     end = start + timedelta(minutes=duration_min)
 

@@ -8,7 +8,7 @@ import json
 from datetime import datetime, timedelta
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from gcal import create_event, delete_event, is_google_calendar_connected, get_calendar_connection_status
+from gcal import create_event, delete_event
 from dotenv import load_dotenv
 from flask import (
     Flask,
@@ -34,7 +34,6 @@ processing_message_ids = {}
 PROCESSED_MESSAGE_TTL = 60 * 60   # 1 hour
 PROCESSING_MESSAGE_TTL = 60        # 1 minute
 
-print("=== EZRESERVE PATCH MARKER V999 ===", flush=True)
 
 def cleanup_message_tracking():
     now = time.time()
@@ -608,18 +607,15 @@ def add_reservation_to_google_calendar(
         )
 
         try:
-            calendar_id = (get_business_by_id(business_id) or {}).get("calendar_id") or "primary"
-            print("GCAL target calendar_id:", calendar_id, flush=True)
             event = create_event(
                 summary=summary,
                 date_str=date,
                 time_str=time_,
                 description=description,
-                calendar_id=calendar_id,
+                calendar_id="primary",
                 duration_min=duration_min,
                 color_id=color_id,
             )
-
         except TypeError:
             # fallback if your gcal.py wrapper does not yet support color_id
             event = create_event(
@@ -715,6 +711,59 @@ def get_manual_reservation_resource_choice(business_id, service_name, resource_i
     return resource, None
 
 
+def get_confirmed_resource_reservations_for_date(business_id, date_iso, resource_ids):
+    if not resource_ids:
+        return {}
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT resource_id, service, time
+        FROM reservations
+        WHERE business_id = %s
+          AND date = %s
+          AND status = 'CONFIRMED'
+          AND resource_id = ANY(%s)
+        """,
+        (business_id, date_iso, resource_ids),
+    )
+    rows = c.fetchall()
+    conn.close()
+
+    grouped = {}
+    for row in rows:
+        grouped.setdefault(row["resource_id"], []).append(row)
+    return grouped
+
+
+def get_service_duration_cached(business_id, service_name, cache=None):
+    key = (service_name or "").strip().lower()
+    if cache is not None and key in cache:
+        return cache[key]
+    duration = int(get_service_info(business_id, service_name).get("duration", 45))
+    if cache is not None:
+        cache[key] = duration
+    return duration
+
+
+def is_resource_slot_full_from_prefetched(business_id, resource, new_time, new_service, reservations_by_resource, service_duration_cache=None):
+    capacity = int(resource.get("capacity") or 1)
+    new_duration = int(get_service_duration_cached(business_id, new_service, service_duration_cache))
+    new_start = time_to_minutes(new_time)
+
+    overlapping = 0
+    for row in reservations_by_resource.get(resource["id"], []):
+        existing_time = normalize_time_str(row["time"])
+        if not existing_time:
+            continue
+        existing_duration = int(get_service_duration_cached(business_id, row["service"], service_duration_cache))
+        existing_start = time_to_minutes(existing_time)
+        if ranges_overlap(new_start, new_duration, existing_start, existing_duration):
+            overlapping += 1
+
+    return overlapping >= capacity
+
 def dashboard_redirect_with_toast(message=None, toast_type="info", tab="reservations"):
     url = f"/dashboard?tab={tab}"
     if message:
@@ -723,7 +772,11 @@ def dashboard_redirect_with_toast(message=None, toast_type="info", tab="reservat
 
 
 def should_attempt_calendar_sync(business):
-    return is_google_calendar_connected()
+    if business.get("gcal_credentials"):
+        return True
+    if os.path.exists("token.json") and os.path.exists("credentials.json"):
+        return True
+    return False
 
 
 def _handle_manual_add_reservation():
@@ -771,16 +824,61 @@ def _handle_manual_add_reservation():
     eligible_resources = get_active_resources_for_service(business_id, valid_service)
 
     if eligible_resources:
-        chosen_resource, error_message = get_manual_reservation_resource_choice(
-            business_id,
-            valid_service,
-            resource_id_raw,
-            date_iso,
-            normalized_time,
-        )
-        if error_message:
-            print("manual_add_reservation:", error_message)
-            return dashboard_redirect_with_toast(error_message, "error")
+        resource_ids = [r["id"] for r in eligible_resources]
+        reservations_by_resource = get_confirmed_resource_reservations_for_date(business_id, date_iso, resource_ids)
+        duration_cache = {}
+
+        if not resource_id_raw or resource_id_raw == "auto":
+            for r in eligible_resources:
+                rules = get_resource_day_rules(business_id, r["id"], date_iso)
+                if rules.get("closed"):
+                    continue
+                if not is_time_within_business_hours(normalized_time, rules["open_time"], rules["close_time"]):
+                    continue
+                if not is_resource_slot_full_from_prefetched(
+                    business_id,
+                    r,
+                    normalized_time,
+                    valid_service,
+                    reservations_by_resource,
+                    duration_cache,
+                ):
+                    chosen_resource = r
+                    break
+
+            if not chosen_resource:
+                return dashboard_redirect_with_toast("This time slot is already taken.", "error")
+        else:
+            try:
+                resource_id = int(resource_id_raw)
+            except Exception:
+                return dashboard_redirect_with_toast("Invalid resource selected.", "error")
+
+            resource_map = {r["id"]: r for r in eligible_resources}
+            chosen_resource = resource_map.get(resource_id)
+            if not chosen_resource:
+                chosen_resource = get_resource_by_id(resource_id, business_id)
+                if not chosen_resource:
+                    return dashboard_redirect_with_toast("Selected resource was not found.", "error")
+                if not chosen_resource.get("is_active"):
+                    return dashboard_redirect_with_toast("Selected resource is inactive.", "error")
+                if not is_resource_allowed_for_service(business_id, resource_id, valid_service):
+                    return dashboard_redirect_with_toast("Selected resource cannot perform that service.", "error")
+
+            rules = get_resource_day_rules(business_id, chosen_resource["id"], date_iso)
+            if rules.get("closed"):
+                return dashboard_redirect_with_toast("Selected resource is unavailable on that date.", "error")
+            if not is_time_within_business_hours(normalized_time, rules["open_time"], rules["close_time"]):
+                return dashboard_redirect_with_toast("Selected resource is outside working hours at that time.", "error")
+            if is_resource_slot_full_from_prefetched(
+                business_id,
+                chosen_resource,
+                normalized_time,
+                valid_service,
+                reservations_by_resource,
+                duration_cache,
+            ):
+                return dashboard_redirect_with_toast("This time slot is already taken.", "error")
     else:
         if is_slot_taken(business_id, date_iso, normalized_time, valid_service):
             print("manual_add_reservation: business-wide slot already taken")
@@ -803,9 +901,7 @@ def _handle_manual_add_reservation():
         if notes:
             update_reservation_note_value(reservation_id, business_id, notes)
 
-        calendar_connected, calendar_reason = get_calendar_connection_status()
-
-        if calendar_connected:
+        if should_attempt_calendar_sync(business):
             calendar_started = time.perf_counter()
             gcal_event = add_reservation_to_google_calendar(
                 business_id,
@@ -825,7 +921,7 @@ def _handle_manual_add_reservation():
             else:
                 calendar_warning = "Reservation saved, but Google Calendar sync failed. Check the server logs."
         else:
-            calendar_warning = f"Reservation saved, but Google Calendar is not connected. {calendar_reason}"
+            calendar_warning = "Reservation saved, but Google Calendar is not connected."
 
     except Exception as e:
         print("manual_add_reservation error:", str(e))
@@ -838,11 +934,10 @@ def _handle_manual_add_reservation():
 
     return dashboard_redirect_with_toast("Reservation added successfully.", "success")
 
-
 @app.route("/reservations/manual-add", methods=["POST"])
 def manual_add_reservation():
     return _handle_manual_add_reservation()
-    print("=== MANUAL ADD PATCHED ROUTE V999 ===", flush=True)
+
 def is_resource_allowed_for_service(business_id, resource_id, service_name):
     service_row = get_service_row_for_business(business_id, service_name)
     if not service_row:
@@ -3285,7 +3380,7 @@ def dashboard():
         blocked_dates=blocked_dates,
         weekday_names=WEEKDAY_NAMES,
         active_tab=request.args.get("tab", "reservations"),
-        google_calendar_connected=is_google_calendar_connected(),
+        google_calendar_connected=bool(business.get("gcal_credentials")),
         whatsapp_connected=bool(business.get("access_token")),
         is_support=is_support_user(),
         dashboard_metrics=dashboard_metrics,
@@ -3294,7 +3389,6 @@ def dashboard():
         status_filter=status_filter or "ALL",
         toast=toast,
         toast_type=toast_type,
-        google_calendar_reason=get_calendar_connection_status()[1],
     )
 
 @app.route("/cancel/<int:reservation_id>")
@@ -3741,7 +3835,6 @@ def delete_blocked_date(block_id):
 if __name__ == "__main__":
     init_db()       # <-- creates tables automatically
     app.run(host="0.0.0.0", port=10000)
-
 
 
 

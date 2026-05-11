@@ -4269,6 +4269,67 @@ def delete_blocked_date(block_id):
 
     return redirect("/dashboard?tab=settings")
 
+@app.route("/shop-mode")
+def shop_mode():
+    if "business_id" not in session:
+        return redirect("/login")
+
+    business_id = session["business_id"]
+    business = get_business_by_id(business_id)
+    if not business:
+        return redirect("/login")
+
+    tz = pytz.timezone(business.get("timezone") or "Asia/Beirut")
+    now_dt = datetime.now(tz)
+    today_iso = now_dt.date().isoformat()
+
+    mark_past_reservations_done(business)
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT id, customer_name, customer_phone, service, date, time,
+               status, resource_name_snapshot
+        FROM reservations
+        WHERE business_id = %s
+          AND date = %s
+          AND status IN ('CONFIRMED', 'DONE')
+        ORDER BY time ASC, id ASC
+        """,
+        (business_id, today_iso),
+    )
+    reservations = c.fetchall()
+    conn.close()
+
+    next_reservation = None
+    now_hhmm = now_dt.strftime("%H:%M")
+
+    enriched = []
+    for r in reservations:
+        item = dict(r)
+        item["is_next"] = False
+        if next_reservation is None and item["status"] == "CONFIRMED" and item["time"] >= now_hhmm:
+            item["is_next"] = True
+            next_reservation = item
+        enriched.append(item)
+
+    stats = {
+        "total": len(enriched),
+        "confirmed": sum(1 for r in enriched if r["status"] == "CONFIRMED"),
+        "done": sum(1 for r in enriched if r["status"] == "DONE"),
+    }
+
+    return render_template(
+        "shop_mode.html",
+        business=business,
+        reservations=enriched,
+        next_reservation=next_reservation,
+        stats=stats,
+        now_display=now_dt.strftime("%H:%M"),
+        today_display=now_dt.strftime("%A %d %B %Y"),
+    )
+
 
 # ------------------ RUN ------------------
 

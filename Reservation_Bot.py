@@ -663,6 +663,144 @@ def update_reservation_note_value(reservation_id, business_id, note):
     conn.commit()
     conn.close()
 
+def get_confirmed_reservations_for_date_fast(business_id, date_iso):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT id, service, time, resource_id
+        FROM reservations
+        WHERE business_id = %s
+          AND date = %s
+          AND status = 'CONFIRMED'
+        """,
+        (business_id, date_iso),
+    )
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+
+def build_service_duration_cache(business_id, reservations_rows, extra_service_names=None):
+    names = set()
+    for row in reservations_rows:
+        if row.get("service"):
+            names.add(row["service"])
+
+    if extra_service_names:
+        for s in extra_service_names:
+            if s:
+                names.add(s)
+
+    cache = {}
+    for name in names:
+        cache[name] = int(get_service_info(business_id, name).get("duration", 45))
+    return cache
+
+
+def is_resource_slot_full_fast(
+    resource,
+    reservations_rows,
+    service_duration_cache,
+    new_time,
+    new_service,
+):
+    capacity = int(resource.get("capacity") or 1)
+    new_duration = int(service_duration_cache.get(new_service, 45))
+    new_start = time_to_minutes(new_time)
+
+    overlapping = 0
+    resource_id = resource["id"]
+
+    for row in reservations_rows:
+        if row.get("resource_id") != resource_id:
+            continue
+
+        existing_time = normalize_time_str(row["time"])
+        if not existing_time:
+            continue
+
+        existing_start = time_to_minutes(existing_time)
+        existing_duration = int(service_duration_cache.get(row["service"], 45))
+
+        if ranges_overlap(new_start, new_duration, existing_start, existing_duration):
+            overlapping += 1
+            if overlapping >= capacity:
+                return True
+
+    return False
+
+
+def get_manual_reservation_resource_choice_fast(
+    business_id,
+    service_name,
+    resource_id_raw,
+    date_iso,
+    time_,
+    eligible_resources,
+    reservations_rows,
+    service_duration_cache,
+):
+    resource_id_raw = (resource_id_raw or "").strip()
+
+    if not resource_id_raw or resource_id_raw == "auto":
+        for r in eligible_resources:
+            rules = get_resource_day_rules(business_id, r["id"], date_iso)
+            if rules.get("closed"):
+                continue
+            if not is_time_within_business_hours(time_, rules["open_time"], rules["close_time"]):
+                continue
+            if not is_resource_slot_full_fast(
+                r,
+                reservations_rows,
+                service_duration_cache,
+                time_,
+                service_name,
+            ):
+                return r, None
+        return None, "No available staff/resource at that time."
+
+    try:
+        resource_id = int(resource_id_raw)
+    except Exception:
+        return None, "Invalid resource selected."
+
+    resource = None
+    for r in eligible_resources:
+        if r["id"] == resource_id:
+            resource = r
+            break
+
+    if not resource:
+        resource = get_resource_by_id(resource_id, business_id)
+
+    if not resource:
+        return None, "Selected resource was not found."
+
+    if not resource.get("is_active"):
+        return None, "Selected resource is inactive."
+
+    if not is_resource_allowed_for_service(business_id, resource_id, service_name):
+        return None, "Selected resource cannot perform that service."
+
+    rules = get_resource_day_rules(business_id, resource_id, date_iso)
+    if rules.get("closed"):
+        return None, "Selected resource is unavailable on that date."
+
+    if not is_time_within_business_hours(time_, rules["open_time"], rules["close_time"]):
+        return None, "Selected resource is outside working hours at that time."
+
+    if is_resource_slot_full_fast(
+        resource,
+        reservations_rows,
+        service_duration_cache,
+        time_,
+        service_name,
+    ):
+        return None, "Selected resource is already booked at that time."
+
+    return resource, None
+
 def get_manual_reservation_resource_choice(business_id, service_name, resource_id_raw, date_iso, time_):
     """
     Returns:
@@ -822,16 +960,27 @@ def _handle_manual_add_reservation():
         ):
             return dashboard_redirect_with_toast("That time is outside business hours.", "error")
 
-        chosen_resource = None
+        # FAST PRELOADS
+        reservations_rows = get_confirmed_reservations_for_date_fast(business_id, date_iso)
         eligible_resources = get_active_resources_for_service(business_id, valid_service)
+        service_duration_cache = build_service_duration_cache(
+            business_id,
+            reservations_rows,
+            extra_service_names=[valid_service],
+        )
+
+        chosen_resource = None
 
         if eligible_resources:
-            chosen_resource, error_message = get_manual_reservation_resource_choice(
+            chosen_resource, error_message = get_manual_reservation_resource_choice_fast(
                 business_id,
                 valid_service,
                 resource_id_raw,
                 date_iso,
                 normalized_time,
+                eligible_resources,
+                reservations_rows,
+                service_duration_cache,
             )
             if error_message:
                 print("manual_add_reservation:", error_message, flush=True)

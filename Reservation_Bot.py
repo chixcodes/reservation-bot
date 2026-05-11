@@ -680,6 +680,339 @@ def get_confirmed_reservations_for_date_fast(business_id, date_iso):
     conn.close()
     return rows
 
+def get_manual_add_prefetch_data(business_id, date_iso, requested_service_name):
+    """
+    Single-connection preload for manual reservation flow.
+    Returns a dict containing business, services, business day rules,
+    eligible resources, per-resource rules, and confirmed reservations.
+    """
+    target_date = datetime.strptime(date_iso, "%Y-%m-%d").date()
+    weekday = target_date.weekday()
+
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    # business
+    c.execute("SELECT * FROM businesses WHERE id = %s", (business_id,))
+    business_row = c.fetchone()
+    business = dict(business_row) if business_row else None
+
+    # services
+    c.execute(
+        """
+        SELECT id, name, price, duration_min
+        FROM services
+        WHERE business_id = %s
+        ORDER BY id
+        """,
+        (business_id,),
+    )
+    service_rows = c.fetchall()
+
+    # business day rules
+    c.execute(
+        """
+        SELECT id
+        FROM blocked_dates
+        WHERE business_id = %s AND blocked_date = %s
+        LIMIT 1
+        """,
+        (business_id, date_iso),
+    )
+    blocked = c.fetchone()
+
+    if blocked:
+        business_day_rules = {"blocked": True, "closed": True, "reason": "blocked_date"}
+    else:
+        c.execute(
+            """
+            SELECT weekday, is_closed,
+                   TO_CHAR(open_time, 'HH24:MI') AS open_time,
+                   TO_CHAR(close_time, 'HH24:MI') AS close_time
+            FROM business_hours
+            WHERE business_id = %s AND weekday = %s
+            """,
+            (business_id, weekday),
+        )
+        row = c.fetchone()
+        if not row:
+            business_day_rules = {"blocked": False, "closed": False, "open_time": "09:00", "close_time": "18:00"}
+        elif row["is_closed"]:
+            business_day_rules = {"blocked": False, "closed": True, "reason": "weekly_closed"}
+        else:
+            business_day_rules = {
+                "blocked": False,
+                "closed": False,
+                "open_time": row["open_time"],
+                "close_time": row["close_time"],
+            }
+
+    # service lookup / validation source
+    services_by_name = {(r["name"] or "").strip().lower(): dict(r) for r in service_rows}
+    requested_clean = (requested_service_name or "").strip().lower()
+
+    requested_service_row = services_by_name.get(requested_clean)
+    if not requested_service_row:
+        for r in service_rows:
+            s_norm = (r["name"] or "").strip().lower()
+            if requested_clean and (requested_clean in s_norm or s_norm in requested_clean):
+                requested_service_row = dict(r)
+                break
+
+    aliases = {
+        "beard": "beard",
+        "beard trim": "beard",
+        "shave": "beard",
+        "haircut": "hair",
+        "cut": "hair",
+        "hair": "hair",
+        "pedicure": "pedicure",
+        "manicure": "manicure",
+    }
+    wanted = aliases.get(requested_clean)
+    if not requested_service_row and wanted:
+        for r in service_rows:
+            s_norm = (r["name"] or "").strip().lower()
+            if wanted in s_norm:
+                requested_service_row = dict(r)
+                break
+
+    # determine if any assignment exists for business
+    c.execute(
+        """
+        SELECT 1
+        FROM resource_services
+        WHERE business_id = %s
+        LIMIT 1
+        """,
+        (business_id,),
+    )
+    has_any_assignments = bool(c.fetchone())
+
+    # eligible resources for requested service
+    if not has_any_assignments:
+        c.execute(
+            """
+            SELECT *
+            FROM resources
+            WHERE business_id = %s
+              AND is_active = TRUE
+            ORDER BY display_order ASC, id ASC
+            """,
+            (business_id,),
+        )
+    elif requested_service_row:
+        c.execute(
+            """
+            SELECT r.*
+            FROM resources r
+            JOIN resource_services rs ON rs.resource_id = r.id
+            WHERE r.business_id = %s
+              AND r.is_active = TRUE
+              AND rs.service_id = %s
+            ORDER BY r.display_order ASC, r.id ASC
+            """,
+            (business_id, requested_service_row["id"]),
+        )
+    else:
+        c.execute("SELECT * FROM resources WHERE 1=0")
+
+    eligible_resources = c.fetchall()
+    resource_ids = [r["id"] for r in eligible_resources]
+
+    # bulk resource blocked dates
+    resource_blocked_ids = set()
+    if resource_ids:
+        c.execute(
+            """
+            SELECT resource_id
+            FROM resource_blocked_dates
+            WHERE business_id = %s
+              AND blocked_date = %s
+              AND resource_id = ANY(%s)
+            """,
+            (business_id, date_iso, resource_ids),
+        )
+        resource_blocked_ids = {row["resource_id"] for row in c.fetchall()}
+
+    # bulk resource hours
+    resource_hours = {}
+    if resource_ids:
+        c.execute(
+            """
+            SELECT resource_id, weekday, is_closed,
+                   TO_CHAR(open_time, 'HH24:MI') AS open_time,
+                   TO_CHAR(close_time, 'HH24:MI') AS close_time
+            FROM resource_hours
+            WHERE business_id = %s
+              AND weekday = %s
+              AND resource_id = ANY(%s)
+            """,
+            (business_id, weekday, resource_ids),
+        )
+        for row in c.fetchall():
+            resource_hours[row["resource_id"]] = row
+
+    resource_rules_map = {}
+    for r in eligible_resources:
+        rid = r["id"]
+        if rid in resource_blocked_ids:
+            resource_rules_map[rid] = {"blocked": True, "closed": True, "reason": "blocked_date"}
+            continue
+
+        rh = resource_hours.get(rid)
+        if not rh:
+            resource_rules_map[rid] = dict(business_day_rules)
+            continue
+
+        if rh["is_closed"]:
+            resource_rules_map[rid] = {"blocked": False, "closed": True, "reason": "weekly_closed"}
+        else:
+            resource_rules_map[rid] = {
+                "blocked": False,
+                "closed": False,
+                "open_time": rh["open_time"],
+                "close_time": rh["close_time"],
+            }
+
+    # all confirmed reservations for date
+    c.execute(
+        """
+        SELECT id, service, time, resource_id
+        FROM reservations
+        WHERE business_id = %s
+          AND date = %s
+          AND status = 'CONFIRMED'
+        """,
+        (business_id, date_iso),
+    )
+    reservations_rows = c.fetchall()
+
+    conn.close()
+
+    service_duration_cache = {}
+    for r in service_rows:
+        service_duration_cache[(r["name"] or "").strip().lower()] = int(r["duration_min"] or 45)
+
+    return {
+        "business": business,
+        "service_rows": service_rows,
+        "requested_service_row": requested_service_row,
+        "requested_service_name": requested_service_row["name"] if requested_service_row else None,
+        "business_day_rules": business_day_rules,
+        "eligible_resources": eligible_resources,
+        "resource_rules_map": resource_rules_map,
+        "reservations_rows": reservations_rows,
+        "service_duration_cache": service_duration_cache,
+    }
+
+
+def validate_service_from_prefetched(service_rows, service_name):
+    cleaned = (service_name or "").strip().lower()
+    if not service_rows:
+        return None, []
+
+    services = [r["name"] for r in service_rows]
+    services_map = {(s or "").strip().lower(): s for s in services}
+    if cleaned in services_map:
+        return services_map[cleaned], services
+
+    for s in services:
+        s_norm = (s or "").strip().lower()
+        if cleaned in s_norm or s_norm in cleaned:
+            return s, services
+
+    aliases = {
+        "beard": "beard",
+        "beard trim": "beard",
+        "shave": "beard",
+        "haircut": "hair",
+        "cut": "hair",
+        "hair": "hair",
+        "pedicure": "pedicure",
+        "manicure": "manicure",
+    }
+    wanted = aliases.get(cleaned)
+    if wanted:
+        for s in services:
+            s_norm = (s or "").strip().lower()
+            if wanted in s_norm:
+                return s, services
+
+    return None, services
+
+
+def get_service_duration_cached_prefetched(service_name, service_duration_cache):
+    key = (service_name or "").strip().lower()
+    return int(service_duration_cache.get(key, 45))
+
+
+def is_business_slot_taken_from_prefetched(new_time, new_service, reservations_rows, service_duration_cache):
+    new_duration = get_service_duration_cached_prefetched(new_service, service_duration_cache)
+    new_start = time_to_minutes(new_time)
+
+    for row in reservations_rows:
+        existing_time = normalize_time_str(row["time"])
+        if not existing_time:
+            continue
+        existing_start = time_to_minutes(existing_time)
+        existing_duration = get_service_duration_cached_prefetched(row["service"], service_duration_cache)
+        if ranges_overlap(new_start, new_duration, existing_start, existing_duration):
+            return True
+    return False
+
+
+def get_manual_reservation_resource_choice_single_prefetch(
+    valid_service,
+    resource_id_raw,
+    normalized_time,
+    eligible_resources,
+    resource_rules_map,
+    reservations_rows,
+    service_duration_cache,
+):
+    resource_id_raw = (resource_id_raw or "").strip()
+
+    if not resource_id_raw or resource_id_raw == "auto":
+        for r in eligible_resources:
+            rules = resource_rules_map.get(r["id"], {"closed": False, "open_time": "09:00", "close_time": "18:00"})
+            if rules.get("closed"):
+                continue
+            if not is_time_within_business_hours(normalized_time, rules["open_time"], rules["close_time"]):
+                continue
+            if not is_resource_slot_full_fast(r, reservations_rows, service_duration_cache, normalized_time, valid_service):
+                return r, None
+        return None, "No available staff/resource at that time."
+
+    try:
+        resource_id = int(resource_id_raw)
+    except Exception:
+        return None, "Invalid resource selected."
+
+    resource = None
+    for r in eligible_resources:
+        if r["id"] == resource_id:
+            resource = r
+            break
+
+    if not resource:
+        return None, "Selected resource was not found."
+
+    if not resource.get("is_active"):
+        return None, "Selected resource is inactive."
+
+    rules = resource_rules_map.get(resource_id, {"closed": False, "open_time": "09:00", "close_time": "18:00"})
+    if rules.get("closed"):
+        return None, "Selected resource is unavailable on that date."
+
+    if not is_time_within_business_hours(normalized_time, rules["open_time"], rules["close_time"]):
+        return None, "Selected resource is outside working hours at that time."
+
+    if is_resource_slot_full_fast(resource, reservations_rows, service_duration_cache, normalized_time, valid_service):
+        return None, "Selected resource is already booked at that time."
+
+    return resource, None
+
 
 def build_service_duration_cache(business_id, reservations_rows, extra_service_names=None):
     names = set()
@@ -937,19 +1270,23 @@ def _handle_manual_add_reservation():
         if not customer_name or not service or not date_iso or not time_raw:
             return dashboard_redirect_with_toast("Please fill in all required fields.", "error")
 
-        business = get_business_by_id(business_id)
-        if not business:
-            return dashboard_redirect_with_toast("Business not found.", "error")
-
-        valid_service, _ = validate_service_for_business(business_id, service)
-        if not valid_service:
-            return dashboard_redirect_with_toast("Selected service is not valid.", "error")
-
         normalized_time = normalize_time_str_with_hours(time_raw)
         if not normalized_time:
             return dashboard_redirect_with_toast("Please choose a valid time.", "error")
 
-        day_rules = get_day_rules(business_id, date_iso)
+        prefetch_started = time.perf_counter()
+        prefetch = get_manual_add_prefetch_data(business_id, date_iso, service)
+        print(f"manual_add_reservation prefetch_seconds: {time.perf_counter() - prefetch_started:.3f}", flush=True)
+
+        business = prefetch["business"]
+        if not business:
+            return dashboard_redirect_with_toast("Business not found.", "error")
+
+        valid_service, _ = validate_service_from_prefetched(prefetch["service_rows"], service)
+        if not valid_service:
+            return dashboard_redirect_with_toast("Selected service is not valid.", "error")
+
+        day_rules = prefetch["business_day_rules"]
         if day_rules.get("closed"):
             return dashboard_redirect_with_toast("This date is closed for reservations.", "error")
 
@@ -960,25 +1297,18 @@ def _handle_manual_add_reservation():
         ):
             return dashboard_redirect_with_toast("That time is outside business hours.", "error")
 
-        # FAST PRELOADS
-        reservations_rows = get_confirmed_reservations_for_date_fast(business_id, date_iso)
-        eligible_resources = get_active_resources_for_service(business_id, valid_service)
-        service_duration_cache = build_service_duration_cache(
-            business_id,
-            reservations_rows,
-            extra_service_names=[valid_service],
-        )
-
-        chosen_resource = None
+        reservations_rows = prefetch["reservations_rows"]
+        eligible_resources = prefetch["eligible_resources"]
+        service_duration_cache = prefetch["service_duration_cache"]
+        service_duration_cache[(valid_service or "").strip().lower()] = int((prefetch["requested_service_row"] or {}).get("duration_min") or service_duration_cache.get((valid_service or "").strip().lower(), 45))
 
         if eligible_resources:
-            chosen_resource, error_message = get_manual_reservation_resource_choice_fast(
-                business_id,
+            chosen_resource, error_message = get_manual_reservation_resource_choice_single_prefetch(
                 valid_service,
                 resource_id_raw,
-                date_iso,
                 normalized_time,
                 eligible_resources,
+                prefetch["resource_rules_map"],
                 reservations_rows,
                 service_duration_cache,
             )
@@ -986,9 +1316,10 @@ def _handle_manual_add_reservation():
                 print("manual_add_reservation:", error_message, flush=True)
                 return dashboard_redirect_with_toast(error_message, "error")
         else:
-            if is_slot_taken(business_id, date_iso, normalized_time, valid_service):
+            if is_business_slot_taken_from_prefetched(normalized_time, valid_service, reservations_rows, service_duration_cache):
                 print("manual_add_reservation: business-wide slot already taken", flush=True)
                 return dashboard_redirect_with_toast("This time slot is already taken.", "error")
+            chosen_resource = None
 
         calendar_warning = None
 

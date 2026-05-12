@@ -2497,15 +2497,23 @@ def process_incoming_message(business, phone, text):
             return "ok", 200
 
         state["new_date"] = normalized_date
+        extracted_time = normalize_time_str_with_hours(
+            t,
+            day_rules.get("open_time"),
+            day_rules.get("close_time"),
+        )
         state["step"] = "awaiting_reschedule_time"
 
-        ask_reschedule_time_map = {
-            "en": f"Great — what new time would you like on {normalized_date}?",
-            "fr": f"Parfait — quelle nouvelle heure souhaitez-vous le {normalized_date} ?",
-            "ar": f"ممتاز — أي وقت جديد بدك بتاريخ {normalized_date}؟",
-        }
-        send_friendly_message(phone, business, lang, ask_reschedule_time_map.get(lang, ask_reschedule_time_map["en"]), purpose="ask_time")
-        return "ok", 200
+        if extracted_time:
+            state["_prefilled_reschedule_time"] = extracted_time
+        else:
+            ask_reschedule_time_map = {
+                "en": f"Great — what new time would you like on {normalized_date}?",
+                "fr": f"Parfait — quelle nouvelle heure souhaitez-vous le {normalized_date} ?",
+                "ar": f"ممتاز — أي وقت جديد بدك بتاريخ {normalized_date}؟",
+            }
+            send_friendly_message(phone, business, lang, ask_reschedule_time_map.get(lang, ask_reschedule_time_map["en"]), purpose="ask_time")
+            return "ok", 200
 
     # STEP RESCHEDULE – TIME
     if state and state.get("step") == "awaiting_reschedule_time":
@@ -2526,7 +2534,7 @@ def process_incoming_message(business, phone, text):
             send_friendly_message(phone, business, lang, tr(lang, "closed_day"), purpose="availability")
             return "ok", 200
 
-        normalized_time = normalize_time_str_with_hours(
+        normalized_time = state.pop("_prefilled_reschedule_time", None) or normalize_time_str_with_hours(
             t,
             day_rules.get("open_time"),
             day_rules.get("close_time"),
@@ -2866,10 +2874,18 @@ def process_incoming_message(business, phone, text):
             return "ok", 200
 
         state["date"] = normalized_date
+        extracted_time = normalize_time_str_with_hours(
+            t,
+            day_rules.get("open_time"),
+            day_rules.get("close_time"),
+        )
         state["step"] = "awaiting_time"
 
-        send_friendly_message(phone, business, lang, tr(lang, "ask_time"), purpose="ask_time")
-        return "ok", 200
+        if extracted_time:
+            state["_prefilled_time"] = extracted_time
+        else:
+            send_friendly_message(phone, business, lang, tr(lang, "ask_time"), purpose="ask_time")
+            return "ok", 200
 
     # STEP 4 – TIME
     if state and state.get("step") == "awaiting_time":
@@ -2884,7 +2900,7 @@ def process_incoming_message(business, phone, text):
             send_friendly_message(phone, business, lang, tr(lang, "closed_day"), purpose="availability")
             return "ok", 200
 
-        time_ = normalize_time_str_with_hours(
+        time_ = state.pop("_prefilled_time", None) or normalize_time_str_with_hours(
             t,
             day_rules.get("open_time"),
             day_rules.get("close_time"),
@@ -4400,7 +4416,7 @@ def reschedule_reservation(reservation_id):
     c.execute(
         """
         SELECT id, customer_name, customer_phone, service, status, google_event_id,
-               resource_id, resource_name_snapshot
+               resource_id, resource_name_snapshot, date, time
         FROM reservations
         WHERE id = %s AND business_id = %s
         LIMIT 1

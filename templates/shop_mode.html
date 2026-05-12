@@ -36,6 +36,21 @@
             </div>
         </div>
 
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+            <div class="bg-slate-900 border border-slate-800 rounded-3xl p-5">
+                <p class="text-slate-400 text-sm">Upcoming Today</p>
+                <p class="text-4xl font-bold mt-2">{{ stats.total }}</p>
+            </div>
+            <div class="bg-slate-900 border border-slate-800 rounded-3xl p-5">
+                <p class="text-slate-400 text-sm">Confirmed</p>
+                <p class="text-4xl font-bold mt-2">{{ stats.confirmed }}</p>
+            </div>
+            <div class="bg-slate-900 border border-slate-800 rounded-3xl p-5">
+                <p class="text-slate-400 text-sm">Next At</p>
+                <p class="text-4xl font-bold mt-2">{{ next_reservation.time if next_reservation else '—' }}</p>
+            </div>
+        </div>
+
         {% if next_reservation %}
         <div class="bg-indigo-600 rounded-3xl p-6 md:p-8 mb-8 shadow-2xl shadow-indigo-900/30">
             <p class="uppercase tracking-[0.2em] text-xs md:text-sm text-indigo-100">Next Reservation</p>
@@ -62,7 +77,7 @@
         {% if reservations %}
         <div class="space-y-4">
             {% for r in reservations %}
-            <div class="rounded-3xl border {% if r.is_next %}border-indigo-500 bg-slate-900{% elif r.status == 'DONE' %}border-emerald-900 bg-slate-900/70{% else %}border-slate-800 bg-slate-900{% endif %} p-5 md:p-6">
+            <div class="rounded-3xl border {% if r.is_next %}border-indigo-500 bg-slate-900{% else %}border-slate-800 bg-slate-900{% endif %} p-5 md:p-6">
                 <div class="grid grid-cols-1 lg:grid-cols-12 gap-4 lg:gap-6 items-center">
                     <div class="lg:col-span-2">
                         <p class="text-slate-400 text-sm">Time</p>
@@ -92,10 +107,6 @@
                         <span class="inline-flex px-4 py-2 rounded-full text-sm font-semibold bg-indigo-500/20 text-indigo-200 border border-indigo-400/30">
                             Next
                         </span>
-                        {% elif r.status == 'DONE' %}
-                        <span class="inline-flex px-4 py-2 rounded-full text-sm font-semibold bg-emerald-500/20 text-emerald-200 border border-emerald-400/30">
-                            Done
-                        </span>
                         {% else %}
                         <span class="inline-flex px-4 py-2 rounded-full text-sm font-semibold bg-green-500/20 text-green-200 border border-green-400/30">
                             Confirmed
@@ -108,7 +119,7 @@
         </div>
         {% else %}
         <div class="rounded-3xl border border-slate-800 bg-slate-900 px-8 py-16 text-center">
-            <p class="text-3xl md:text-4xl font-bold">No reservations for today</p>
+            <p class="text-3xl md:text-4xl font-bold">No upcoming reservations for today</p>
             <p class="text-slate-400 mt-3 text-lg">This page refreshes automatically every 30 seconds.</p>
         </div>
         {% endif %}

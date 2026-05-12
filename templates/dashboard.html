@@ -36,6 +36,12 @@
                 <button type="button" onclick="switchTab('settings')" data-tab="settings" class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
                     Settings
                 </button>
+                <button type="button" onclick="switchTab('reports')" data-tab="reports" class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
+                    Reports
+                </button>
+                <button type="button" onclick="switchTab('reports')" data-tab="reports" class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
+                    Reports
+                </button>
             </nav>
 
             <div class="p-4 border-t border-slate-800">
@@ -131,7 +137,7 @@
                 <div id="tab-reservations" class="tab-content active">
                     <div class="mb-6">
                         <h2 class="text-xl font-semibold">Reservations Overview</h2>
-                        <p class="text-sm text-slate-500">Manage bookings and view your daily activity</p>
+                        <p class="text-sm text-slate-500">Manage bookings, reschedule appointments, and view your daily activity</p>
                     </div>
 
                     <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-4 mb-6">
@@ -378,12 +384,25 @@
                                         </td>
 
                                         <td class="px-5 py-4 text-right">
-                                            {% if r.status == "CONFIRMED" %}
-                                            <a href="/cancel/{{ r.id }}?business_id={{ business.id }}"
-                                               class="inline-flex px-3 py-2 rounded-lg bg-red-50 text-red-700 hover:bg-red-100 text-sm font-medium">
-                                                Cancel
-                                            </a>
-                                            {% endif %}
+                                            <div class="flex items-center justify-end gap-2">
+                                                {% if r.status != "CANCELED" %}
+                                                <button type="button"
+                                                    onclick="openRescheduleModal(this)"
+                                                    data-id="{{ r.id }}"
+                                                    data-date="{{ r.date }}"
+                                                    data-time="{{ r.time }}"
+                                                    data-resource-id="{{ r.resource_id or '' }}"
+                                                    class="inline-flex px-3 py-2 rounded-lg bg-indigo-50 text-indigo-700 hover:bg-indigo-100 text-sm font-medium">
+                                                    Reschedule
+                                                </button>
+                                                {% endif %}
+                                                {% if r.status == "CONFIRMED" %}
+                                                <a href="/cancel/{{ r.id }}?business_id={{ business.id }}"
+                                                   class="inline-flex px-3 py-2 rounded-lg bg-red-50 text-red-700 hover:bg-red-100 text-sm font-medium">
+                                                    Cancel
+                                                </a>
+                                                {% endif %}
+                                            </div>
                                         </td>
                                     </tr>
                                     {% else %}
@@ -648,6 +667,63 @@
                     </div>
                 </div>
 
+
+<!-- REPORTS TAB -->
+<div id="tab-reports" class="tab-content">
+    <div class="mb-6">
+        <h2 class="text-xl font-semibold">Reports & Insights</h2>
+        <p class="text-sm text-slate-500">Track business activity and estimate the time EzRezerve helps you save.</p>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
+        <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+            <p class="text-sm text-slate-500">Total Reservations</p>
+            <p class="text-3xl font-bold mt-2">{{ report_metrics.total_reservations }}</p>
+        </div>
+        <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+            <p class="text-sm text-slate-500">Confirmed</p>
+            <p class="text-3xl font-bold mt-2">{{ report_metrics.confirmed_reservations }}</p>
+        </div>
+        <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+            <p class="text-sm text-slate-500">Canceled</p>
+            <p class="text-3xl font-bold mt-2">{{ report_metrics.canceled_reservations }}</p>
+        </div>
+        <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+            <p class="text-sm text-slate-500">Done</p>
+            <p class="text-3xl font-bold mt-2">{{ report_metrics.done_reservations }}</p>
+        </div>
+    </div>
+
+    <div class="grid grid-cols-1 xl:grid-cols-3 gap-6 mb-6">
+        <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+            <p class="text-sm text-slate-500">Booked Revenue</p>
+            <p class="text-4xl font-bold mt-2">${{ "%.2f"|format(report_metrics.total_booked_revenue) }}</p>
+            <p class="text-sm text-slate-500 mt-2">Confirmed + done reservations</p>
+        </div>
+        <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+            <p class="text-sm text-slate-500">Completed Revenue</p>
+            <p class="text-4xl font-bold mt-2">${{ "%.2f"|format(report_metrics.total_done_revenue) }}</p>
+            <p class="text-sm text-slate-500 mt-2">Only completed appointments</p>
+        </div>
+        <div class="bg-indigo-600 text-white rounded-2xl p-6 shadow-sm">
+            <p class="text-sm text-indigo-100">{{ report_metrics.savings_label }}</p>
+            <p class="text-4xl font-bold mt-2">{{ report_metrics.estimated_time_saved_hours }}h {{ report_metrics.estimated_time_saved_remainder_minutes }}m</p>
+            <p class="text-sm text-indigo-100 mt-2">Estimate based on the number of reservations managed in EzRezerve.</p>
+        </div>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+            <p class="text-sm text-slate-500">Most Booked Service</p>
+            <p class="text-2xl font-semibold mt-2">{{ report_metrics.top_service }}</p>
+        </div>
+        <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+            <p class="text-sm text-slate-500">Busiest Staff / Resource</p>
+            <p class="text-2xl font-semibold mt-2">{{ report_metrics.top_resource }}</p>
+        </div>
+    </div>
+</div>
+
                 <!-- SETTINGS TAB -->
                 <div id="tab-settings" class="tab-content">
                     <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
@@ -808,7 +884,8 @@
                 reservations: "Reservations",
                 services: "Services",
                 resources: "Resources",
-                settings: "Settings"
+                settings: "Settings",
+                reports: "Reports"
             };
 
             document.getElementById("page-title").innerText = titles[tabId];
@@ -868,5 +945,76 @@
             });
         }
     </script>
+
+<!-- RESCHEDULE MODAL -->
+<div id="rescheduleModal" class="fixed inset-0 bg-black/50 z-[120] hidden items-center justify-center p-4">
+    <div class="bg-white w-full max-w-xl rounded-3xl shadow-2xl border border-slate-200">
+        <div class="px-6 py-5 border-b border-slate-200 flex items-center justify-between">
+            <div>
+                <h3 class="text-xl font-semibold">Reschedule Reservation</h3>
+                <p class="text-sm text-slate-500 mt-1">Update the date, time, or staff/resource.</p>
+            </div>
+            <button type="button" onclick="closeRescheduleModal()" class="text-slate-500 hover:text-slate-800 text-2xl leading-none">×</button>
+        </div>
+
+        <form id="rescheduleForm" method="post" action="" class="p-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+                <label class="block text-sm font-medium mb-2">New Date</label>
+                <input id="rescheduleDate" type="date" name="date" required class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            </div>
+
+            <div>
+                <label class="block text-sm font-medium mb-2">New Time</label>
+                <input id="rescheduleTime" type="time" name="time" required class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            </div>
+
+            <div class="md:col-span-2">
+                <label class="block text-sm font-medium mb-2">Staff / Resource</label>
+                <select id="rescheduleResource" name="resource_id" class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    <option value="">Keep current / auto assign</option>
+                    {% for r in resources %}
+                    {% if r.is_active %}
+                    <option value="{{ r.id }}">{{ r.name }} ({{ r.resource_type }})</option>
+                    {% endif %}
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div class="md:col-span-2 flex justify-end gap-3 mt-2">
+                <button type="button" onclick="closeRescheduleModal()" class="px-5 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold">
+                    Cancel
+                </button>
+                <button type="submit" class="px-5 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-semibold">
+                    Save Reschedule
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+    function openRescheduleModal(button) {
+        const modal = document.getElementById("rescheduleModal");
+        const form = document.getElementById("rescheduleForm");
+        const dateInput = document.getElementById("rescheduleDate");
+        const timeInput = document.getElementById("rescheduleTime");
+        const resourceSelect = document.getElementById("rescheduleResource");
+
+        form.action = `/reservations/reschedule/${button.dataset.id}`;
+        dateInput.value = button.dataset.date || "";
+        timeInput.value = button.dataset.time || "";
+        resourceSelect.value = button.dataset.resourceId || "";
+
+        modal.classList.remove("hidden");
+        modal.classList.add("flex");
+    }
+
+    function closeRescheduleModal() {
+        const modal = document.getElementById("rescheduleModal");
+        modal.classList.add("hidden");
+        modal.classList.remove("flex");
+    }
+</script>
+
 </body>
 </html>

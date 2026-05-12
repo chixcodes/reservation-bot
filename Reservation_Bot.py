@@ -574,6 +574,134 @@ def send_reservation_cancellation(
     send_friendly_message(phone, business, lang, message, purpose="cancel")
 
 
+def send_reservation_rescheduled(
+    phone,
+    name,
+    service,
+    old_date,
+    old_time,
+    new_date,
+    new_time,
+    business,
+    old_resource_name=None,
+    new_resource_name=None,
+    lang=None,
+):
+    if not phone:
+        return False
+
+    if not lang:
+        preferred = (business.get("preferred_language") or "auto").strip().lower()
+        lang = preferred if preferred in ("en", "fr", "ar") else "en"
+
+    old_resource_line = ""
+    new_resource_line = ""
+    if old_resource_name:
+        if lang == "fr":
+            old_resource_line = f"\nAncien prestataire : {old_resource_name}"
+        elif lang == "ar":
+            old_resource_line = f"\nالموارد السابقة: {old_resource_name}"
+        else:
+            old_resource_line = f"\nPrevious staff/resource: {old_resource_name}"
+
+    if new_resource_name:
+        if lang == "fr":
+            new_resource_line = f"\nNouveau prestataire : {new_resource_name}"
+        elif lang == "ar":
+            new_resource_line = f"\nالمورد الجديد: {new_resource_name}"
+        else:
+            new_resource_line = f"\nNew staff/resource: {new_resource_name}"
+
+    if lang == "fr":
+        message = (
+            f"✅ Votre réservation a été reprogrammée.\n"
+            f"Nom : {name}\n"
+            f"Service : {service}\n"
+            f"Ancienne date : {old_date}\n"
+            f"Ancienne heure : {old_time}{old_resource_line}\n\n"
+            f"Nouvelle date : {new_date}\n"
+            f"Nouvelle heure : {new_time}{new_resource_line}"
+        )
+    elif lang == "ar":
+        message = (
+            f"✅ تم تعديل موعد حجزك.\n"
+            f"الاسم: {name}\n"
+            f"الخدمة: {service}\n"
+            f"التاريخ السابق: {old_date}\n"
+            f"الوقت السابق: {old_time}{old_resource_line}\n\n"
+            f"التاريخ الجديد: {new_date}\n"
+            f"الوقت الجديد: {new_time}{new_resource_line}"
+        )
+    else:
+        message = (
+            f"✅ Your reservation has been rescheduled.\n"
+            f"Name: {name}\n"
+            f"Service: {service}\n"
+            f"Previous date: {old_date}\n"
+            f"Previous time: {old_time}{old_resource_line}\n\n"
+            f"New date: {new_date}\n"
+            f"New time: {new_time}{new_resource_line}"
+        )
+
+    return send_friendly_message(phone, business, lang, message, purpose="confirmation")
+
+
+def apply_reschedule_update(
+    business,
+    reservation,
+    new_date,
+    normalized_time,
+    chosen_resource,
+):
+    business_id = business["id"]
+    reservation_id = reservation["id"]
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        UPDATE reservations
+        SET date = %s,
+            time = %s,
+            resource_id = %s,
+            resource_name_snapshot = %s,
+            status = CASE WHEN status = 'DONE' THEN 'CONFIRMED' ELSE status END
+        WHERE id = %s AND business_id = %s
+        """,
+        (
+            new_date,
+            normalized_time,
+            chosen_resource["id"] if chosen_resource else None,
+            chosen_resource["name"] if chosen_resource else None,
+            reservation_id,
+            business_id,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    old_event_id = reservation.get("google_event_id")
+    if old_event_id:
+        try:
+            delete_event(old_event_id, calendar_id=(business.get("calendar_id") or "primary"))
+        except Exception as e:
+            print("reschedule delete_event warning:", e, flush=True)
+
+    new_event = add_reservation_to_google_calendar(
+        business_id,
+        reservation["customer_name"],
+        reservation["service"],
+        new_date,
+        normalized_time,
+        resource_name=chosen_resource["name"] if chosen_resource else None,
+        resource_id=chosen_resource["id"] if chosen_resource else None,
+    )
+    if new_event and new_event.get("id"):
+        save_google_event_id(reservation_id, new_event.get("id"))
+
+    return new_event
+
+
 def add_reservation_to_google_calendar(
     business_id,
     name,
@@ -1225,7 +1353,8 @@ def get_confirmed_reservations_for_phone(business, phone):
     c = conn.cursor()
     c.execute(
         """
-        SELECT id, google_event_id, customer_name, service, date, time
+        SELECT id, google_event_id, customer_name, customer_phone, service, date, time,
+               resource_id, resource_name_snapshot, status
         FROM reservations
         WHERE business_id = %s
           AND customer_phone = %s
@@ -1341,6 +1470,17 @@ def is_cancel_intent(text):
     ]
     return any(k in t for k in cancel_keywords)
 
+def is_reschedule_intent(text):
+    t = (text or "").strip().lower()
+    reschedule_keywords = [
+        "reschedule", "change my reservation", "change appointment", "move my reservation",
+        "move appointment", "reschedule appointment", "reschedule reservation",
+        "modifier reservation", "changer reservation", "decaler reservation", "reporter reservation",
+        "تغيير الحجز", "غير الحجز", "بدل الموعد", "بدي غير الحجز", "أجل الحجز", "اجل الحجز",
+        "ghayer el hajz", "ghayer l hajz", "bade ghayer", "bede ghayer"
+    ]
+    return any(k in t for k in reschedule_keywords)
+
 def is_yes_intent(text):
     t = (text or "").strip().lower()
     yes_keywords = {
@@ -1409,9 +1549,9 @@ def tr_switch_declined(lang, preferred_name, nearby_text=""):
 def tr(lang, key, **kwargs):
     messages = {
         "greeting": {
-            "en": "Hi! Welcome 👋\n\nHow can I help you today?\n• Type *book* to make a reservation\n• Type *cancel* to cancel your reservation",
-            "ar": "أهلاً 👋\n\nكيف فيني ساعدك اليوم؟\n• اكتب *احجز* لتعمل حجز\n• اكتب *الغاء* لتلغي الحجز",
-            "fr": "Bonjour 👋\n\nComment puis-je vous aider aujourd’hui ?\n• Tapez *book* pour réserver\n• Tapez *cancel* pour annuler votre réservation",
+            "en": "Hi! Welcome 👋\n\nHow can I help you today?\n• Type *book* to make a reservation\n• Type *cancel* to cancel your reservation\n• Type *reschedule* to move your reservation",
+            "ar": "أهلاً 👋\n\nكيف فيني ساعدك اليوم؟\n• اكتب *احجز* لتعمل حجز\n• اكتب *الغاء* لتلغي الحجز\n• اكتب *تغيير الحجز* لتغيير الموعد",
+            "fr": "Bonjour 👋\n\nComment puis-je vous aider aujourd’hui ?\n• Tapez *book* pour réserver\n• Tapez *cancel* pour annuler votre réservation\n• Tapez *reschedule* pour déplacer votre réservation",
         },
         "ask_name": {
             "en": "Sure — what is your full name?",
@@ -2272,7 +2412,7 @@ def process_incoming_message(business, phone, text):
         for r in reservations:
             event_id = r.get("google_event_id")
             if event_id:
-                if delete_event(event_id, calendar_id="primary"):
+                if delete_event(event_id, calendar_id=(business.get("calendar_id") or "primary")):
                     deleted_count += 1
 
         cancelled_count = mark_reservations_cancelled_by_phone(business["id"], phone)
@@ -2285,6 +2425,223 @@ def process_incoming_message(business, phone, text):
             purpose="cancel",
         )
         return "ok", 200
+
+    # RESCHEDULE BOOKING
+    if is_reschedule_intent(lt):
+        reservations = get_confirmed_reservations_for_phone(business, phone)
+
+        if not reservations:
+            no_reschedule_map = {
+                "en": "You have no active reservation to reschedule.",
+                "fr": "Vous n’avez aucune réservation active à reprogrammer.",
+                "ar": "ما عندك حجز مفعّل لتغيير موعده.",
+            }
+            send_friendly_message(
+                phone,
+                business,
+                lang,
+                no_reschedule_map.get(lang, no_reschedule_map["en"]),
+                purpose="reschedule",
+            )
+            return "ok", 200
+
+        reservation = reservations[0]
+        user_state[key] = {
+            "step": "awaiting_reschedule_date",
+            "lang": lang,
+            "reschedule_reservation_id": reservation["id"],
+            "name": reservation.get("customer_name", ""),
+            "service": reservation.get("service", ""),
+            "old_date": reservation.get("date", ""),
+            "old_time": reservation.get("time", ""),
+            "resource_id": reservation.get("resource_id"),
+            "resource_name": reservation.get("resource_name_snapshot"),
+        }
+
+        ask_reschedule_date_map = {
+            "en": f"I found your active reservation for {reservation.get('service', '')} on {reservation.get('date', '')} at {reservation.get('time', '')}. What new date would you like?",
+            "fr": f"J’ai trouvé votre réservation active pour {reservation.get('service', '')} le {reservation.get('date', '')} à {reservation.get('time', '')}. Quelle nouvelle date souhaitez-vous ?",
+            "ar": f"لقيت حجزك المفعّل لخدمة {reservation.get('service', '')} بتاريخ {reservation.get('date', '')} الساعة {reservation.get('time', '')}. أي تاريخ جديد بدك؟",
+        }
+        send_friendly_message(
+            phone,
+            business,
+            lang,
+            ask_reschedule_date_map.get(lang, ask_reschedule_date_map["en"]),
+            purpose="ask_date",
+        )
+        return "ok", 200
+
+    # STEP RESCHEDULE – DATE
+    if state and state.get("step") == "awaiting_reschedule_date":
+        lang = state.get("lang", lang)
+
+        if is_booking_intent(t) or is_cancel_intent(t) or is_reschedule_intent(t):
+            repeat_date_map = {
+                "en": "Please send the new date you want for your reservation.",
+                "fr": "Veuillez envoyer la nouvelle date souhaitée pour votre réservation.",
+                "ar": "من فضلك ابعت التاريخ الجديد اللي بدك ياه للحجز.",
+            }
+            send_friendly_message(phone, business, lang, repeat_date_map.get(lang, repeat_date_map["en"]), purpose="ask_date")
+            return "ok", 200
+
+        try:
+            normalized_date = normalize_booking_date(t)
+        except Exception:
+            send_friendly_message(phone, business, lang, tr(lang, "invalid_date"), purpose="ask_date")
+            return "ok", 200
+
+        day_rules = get_day_rules(business["id"], normalized_date)
+        if day_rules.get("closed"):
+            send_friendly_message(phone, business, lang, tr(lang, "closed_day"), purpose="availability")
+            return "ok", 200
+
+        state["new_date"] = normalized_date
+        state["step"] = "awaiting_reschedule_time"
+
+        ask_reschedule_time_map = {
+            "en": f"Great — what new time would you like on {normalized_date}?",
+            "fr": f"Parfait — quelle nouvelle heure souhaitez-vous le {normalized_date} ?",
+            "ar": f"ممتاز — أي وقت جديد بدك بتاريخ {normalized_date}؟",
+        }
+        send_friendly_message(phone, business, lang, ask_reschedule_time_map.get(lang, ask_reschedule_time_map["en"]), purpose="ask_time")
+        return "ok", 200
+
+    # STEP RESCHEDULE – TIME
+    if state and state.get("step") == "awaiting_reschedule_time":
+        lang = state.get("lang", lang)
+
+        if is_booking_intent(t) or is_cancel_intent(t) or is_reschedule_intent(t):
+            repeat_time_map = {
+                "en": "Please send the new time you want for your reservation.",
+                "fr": "Veuillez envoyer la nouvelle heure souhaitée pour votre réservation.",
+                "ar": "من فضلك ابعت الوقت الجديد اللي بدك ياه للحجز.",
+            }
+            send_friendly_message(phone, business, lang, repeat_time_map.get(lang, repeat_time_map["en"]), purpose="ask_time")
+            return "ok", 200
+
+        new_date = state.get("new_date")
+        day_rules = get_day_rules(business["id"], new_date)
+        if day_rules.get("closed"):
+            send_friendly_message(phone, business, lang, tr(lang, "closed_day"), purpose="availability")
+            return "ok", 200
+
+        normalized_time = normalize_time_str_with_hours(
+            t,
+            day_rules.get("open_time"),
+            day_rules.get("close_time"),
+        )
+        if not normalized_time:
+            send_friendly_message(phone, business, lang, tr(lang, "invalid_time"), purpose="ask_time")
+            return "ok", 200
+
+        if not is_time_within_business_hours(normalized_time, day_rules["open_time"], day_rules["close_time"]):
+            send_friendly_message(phone, business, lang, tr(lang, "outside_hours"), purpose="availability")
+            return "ok", 200
+
+        reservation_id = state.get("reschedule_reservation_id")
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT id, customer_name, customer_phone, service, status, google_event_id,
+                   resource_id, resource_name_snapshot, date, time
+            FROM reservations
+            WHERE id = %s AND business_id = %s
+            LIMIT 1
+            """,
+            (reservation_id, business["id"]),
+        )
+        reservation = c.fetchone()
+        conn.close()
+
+        if not reservation:
+            user_state.pop(key, None)
+            missing_map = {
+                "en": "I could not find your reservation anymore. Please send book to create a new one.",
+                "fr": "Je n’ai plus trouvé votre réservation. Veuillez envoyer book pour créer une nouvelle réservation.",
+                "ar": "ما عاد لقيت الحجز. ابعت احجز إذا بدك تعمل حجز جديد.",
+            }
+            send_friendly_message(phone, business, lang, missing_map.get(lang, missing_map["en"]), purpose="error")
+            return "ok", 200
+
+        reservations_rows = get_confirmed_reservations_for_date_excluding_fast(
+            business["id"],
+            new_date,
+            excluded_reservation_id=reservation_id,
+        )
+        valid_service, _ = validate_service_for_business(business["id"], reservation["service"])
+        if not valid_service:
+            send_friendly_message(phone, business, lang, tr(lang, "save_error"), purpose="error")
+            user_state.pop(key, None)
+            return "ok", 200
+
+        eligible_resources = get_active_resources_for_service(business["id"], valid_service)
+        service_duration_cache = build_service_duration_cache(
+            business["id"],
+            reservations_rows,
+            extra_service_names=[valid_service],
+        )
+
+        selected_resource_raw = str(state.get("resource_id")) if state.get("resource_id") else "auto"
+        chosen_resource = None
+
+        if eligible_resources:
+            chosen_resource, error_message = get_manual_reservation_resource_choice_fast(
+                business["id"],
+                valid_service,
+                selected_resource_raw,
+                new_date,
+                normalized_time,
+                eligible_resources,
+                reservations_rows,
+                service_duration_cache,
+            )
+            if error_message:
+                send_friendly_message(phone, business, lang, error_message, purpose="slot_taken")
+                return "ok", 200
+        else:
+            new_duration = int(service_duration_cache.get(valid_service, 45))
+            new_start = time_to_minutes(normalized_time)
+            for row in reservations_rows:
+                existing_time = normalize_time_str(row["time"])
+                if not existing_time:
+                    continue
+                existing_start = time_to_minutes(existing_time)
+                existing_duration = int(service_duration_cache.get(row["service"], 45))
+                if ranges_overlap(new_start, new_duration, existing_start, existing_duration):
+                    send_friendly_message(phone, business, lang, tr(lang, "slot_taken", date=new_date, time=normalized_time), purpose="slot_taken")
+                    return "ok", 200
+
+        try:
+            new_event = apply_reschedule_update(
+                business,
+                reservation,
+                new_date,
+                normalized_time,
+                chosen_resource,
+            )
+
+            send_reservation_rescheduled(
+                phone,
+                reservation.get("customer_name", ""),
+                valid_service,
+                reservation.get("date", ""),
+                reservation.get("time", ""),
+                new_date,
+                normalized_time,
+                business,
+                old_resource_name=reservation.get("resource_name_snapshot"),
+                new_resource_name=chosen_resource["name"] if chosen_resource else None,
+                lang=lang,
+            )
+
+            user_state.pop(key, None)
+            return "ok", 200
+        except Exception as e:
+            print("customer reschedule error:", str(e), flush=True)
+            send_friendly_message(phone, business, lang, tr(lang, "save_error"), purpose="error")
+            return "ok", 200
 
     # STEP X – ALTERNATIVE RESOURCE CONFIRMATION
     if state and state.get("step") == "awaiting_alternative_confirmation":
@@ -2474,20 +2831,12 @@ def process_incoming_message(business, phone, text):
         state["service"] = valid_service
         state["step"] = "awaiting_date"
 
-        services_text = format_service_bullets_for_business(business["id"])
-
-        service_prompt_map = {
-            "en": f"Thanks, {state.get('name', '')}. Which service would you like?\nAvailable services:\n{services_text}",
-            "fr": f"Merci, {state.get('name', '')}. Quel service souhaitez-vous ?\nServices disponibles :\n{services_text}",
-            "ar": f"شكراً {state.get('name', '')}. أي خدمة بدك؟\nالخدمات المتوفرة:\n{services_text}",
-        }
-
         send_friendly_message(
             phone,
             business,
             lang,
-            service_prompt_map.get(lang, service_prompt_map["en"]),
-            purpose="ask_service",
+            tr(lang, "ask_date", service=valid_service),
+            purpose="ask_date",
         )
         return "ok", 200
 
@@ -3705,7 +4054,7 @@ def cancel_reservation(reservation_id):
     # Delete Google Calendar event first
     if business and google_event_id:
         try:
-            deleted = delete_event(google_event_id, calendar_id="primary")
+            deleted = delete_event(google_event_id, calendar_id=(business.get("calendar_id") or "primary"))
             print("Google Calendar delete result:", deleted)
         except Exception as e:
             print("Error deleting Google Calendar event:", e)
@@ -4126,48 +4475,30 @@ def reschedule_reservation(reservation_id):
             if ranges_overlap(new_start, new_duration, existing_start, existing_duration):
                 return dashboard_redirect_with_toast("This time slot is already taken.", "error")
 
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute(
-        """
-        UPDATE reservations
-        SET date = %s,
-            time = %s,
-            resource_id = %s,
-            resource_name_snapshot = %s,
-            status = CASE WHEN status = 'DONE' THEN 'CONFIRMED' ELSE status END
-        WHERE id = %s AND business_id = %s
-        """,
-        (
-            new_date,
-            normalized_time,
-            chosen_resource["id"] if chosen_resource else None,
-            chosen_resource["name"] if chosen_resource else None,
-            reservation_id,
-            business_id,
-        ),
-    )
-    conn.commit()
-    conn.close()
-
-    old_event_id = reservation.get("google_event_id")
-    if old_event_id:
-        try:
-            delete_event(old_event_id, calendar_id=(business.get("calendar_id") or "primary"))
-        except Exception as e:
-            print("reschedule delete_event warning:", e, flush=True)
-
-    new_event = add_reservation_to_google_calendar(
-        business_id,
-        reservation["customer_name"],
-        valid_service,
+    apply_reschedule_update(
+        business,
+        reservation,
         new_date,
         normalized_time,
-        resource_name=chosen_resource["name"] if chosen_resource else None,
-        resource_id=chosen_resource["id"] if chosen_resource else None,
+        chosen_resource,
     )
-    if new_event and new_event.get("id"):
-        save_google_event_id(reservation_id, new_event.get("id"))
+
+    if reservation.get("customer_phone"):
+        try:
+            send_reservation_rescheduled(
+                reservation.get("customer_phone"),
+                reservation.get("customer_name", ""),
+                valid_service,
+                reservation.get("date", ""),
+                reservation.get("time", ""),
+                new_date,
+                normalized_time,
+                business,
+                old_resource_name=reservation.get("resource_name_snapshot"),
+                new_resource_name=chosen_resource["name"] if chosen_resource else None,
+            )
+        except Exception as e:
+            print("reschedule whatsapp notify warning:", e, flush=True)
 
     return dashboard_redirect_with_toast("Reservation rescheduled successfully.", "success")
 

@@ -26,6 +26,8 @@ import pytz
 import sys
 import time
 from urllib.parse import quote_plus
+import secrets
+from flask import abort
 # ------------------ BUSINESS HELPERS ------------------
 
 processed_message_ids = {}
@@ -81,23 +83,13 @@ def clear_message_processing(message_id):
 def get_business_by_phone_number_id(phone_number_id: str):
     conn = get_db_connection()
     c = conn.cursor()
-
-    # Try to match by phone_number_id
     c.execute(
         "SELECT * FROM businesses WHERE phone_number_id=%s LIMIT 1",
         (phone_number_id,),
     )
     row = c.fetchone()
-
-    # If nothing found, fallback to first business (for dev)
-    if not row:
-        c.execute("SELECT * FROM businesses LIMIT 1")
-        row = c.fetchone()
-
     conn.close()
-    if row:
-        return dict(row)
-    return None
+    return dict(row) if row else None
 
 
 def get_business_by_id(business_id: int):
@@ -114,15 +106,85 @@ def get_business_by_id(business_id: int):
 # ------------------ FLASK APP ------------------
 
 app = Flask(__name__)
-app.secret_key = os.getenv("SECRET_KEY", "change-me-in-render")
 
 # ------------------ CONFIG (.env) ------------------
 
 load_dotenv()
 
+secret_key = os.getenv("SECRET_KEY", "").strip()
+if not secret_key:
+    raise RuntimeError("SECRET_KEY is missing. Set it in environment variables before starting the app.")
+app.secret_key = secret_key
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SECURE=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
+)
+
 OPENROUTER_API_KEY = (os.getenv("OPENROUTER_API_KEY") or "").strip()
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "khoury123")
+DEBUG_LOGS = os.getenv("DEBUG_LOGS", "false").strip().lower() == "true"
+
+
+def safe_log(*parts):
+    if DEBUG_LOGS:
+        print(*parts, flush=True)
+
+
+rate_limit_store = {}
+
+
+def is_rate_limited(bucket: str, key: str, limit: int, window_seconds: int):
+    now = time.time()
+    combined_key = f"{bucket}:{key}"
+    history = [ts for ts in rate_limit_store.get(combined_key, []) if now - ts < window_seconds]
+    limited = len(history) >= limit
+    if not limited:
+        history.append(now)
+    rate_limit_store[combined_key] = history
+    return limited
+
+
+def get_csrf_token():
+    token = session.get("_csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["_csrf_token"] = token
+    return token
+
+
+app.jinja_env.globals["csrf_token"] = get_csrf_token
+
+
+CSRF_EXEMPT_PATHS = ("/webhook", "/login", "/register")
+
+
+@app.before_request
+def csrf_protect():
+    if request.method != "POST":
+        return
+
+    if request.path.startswith("/admin/"):
+        return
+
+    if request.path in CSRF_EXEMPT_PATHS:
+        return
+
+    token = session.get("_csrf_token", "")
+    form_token = request.form.get("_csrf_token", "")
+    if not token or not form_token or token != form_token:
+        abort(403)
+
+
+@app.after_request
+def add_security_headers(response):
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    return response
 
 
 # ------------------ CONVERSATION STATE ------------------
@@ -189,8 +251,7 @@ def send_message(to: str, text: str, business: dict):
 
     try:
         r = requests.post(url, headers=headers, json=payload, timeout=15)
-        print("send_message status:", r.status_code, flush=True)
-        print("send_message body:", r.text, flush=True)
+        safe_log("send_message status:", r.status_code)
         return r.ok
     except Exception as e:
         print("send_message error (meta):", e)
@@ -2497,23 +2558,15 @@ def process_incoming_message(business, phone, text):
             return "ok", 200
 
         state["new_date"] = normalized_date
-        extracted_time = normalize_time_str_with_hours(
-            t,
-            day_rules.get("open_time"),
-            day_rules.get("close_time"),
-        )
         state["step"] = "awaiting_reschedule_time"
 
-        if extracted_time:
-            state["_prefilled_reschedule_time"] = extracted_time
-        else:
-            ask_reschedule_time_map = {
-                "en": f"Great — what new time would you like on {normalized_date}?",
-                "fr": f"Parfait — quelle nouvelle heure souhaitez-vous le {normalized_date} ?",
-                "ar": f"ممتاز — أي وقت جديد بدك بتاريخ {normalized_date}؟",
-            }
-            send_friendly_message(phone, business, lang, ask_reschedule_time_map.get(lang, ask_reschedule_time_map["en"]), purpose="ask_time")
-            return "ok", 200
+        ask_reschedule_time_map = {
+            "en": f"Great — what new time would you like on {normalized_date}?",
+            "fr": f"Parfait — quelle nouvelle heure souhaitez-vous le {normalized_date} ?",
+            "ar": f"ممتاز — أي وقت جديد بدك بتاريخ {normalized_date}؟",
+        }
+        send_friendly_message(phone, business, lang, ask_reschedule_time_map.get(lang, ask_reschedule_time_map["en"]), purpose="ask_time")
+        return "ok", 200
 
     # STEP RESCHEDULE – TIME
     if state and state.get("step") == "awaiting_reschedule_time":
@@ -2534,7 +2587,7 @@ def process_incoming_message(business, phone, text):
             send_friendly_message(phone, business, lang, tr(lang, "closed_day"), purpose="availability")
             return "ok", 200
 
-        normalized_time = state.pop("_prefilled_reschedule_time", None) or normalize_time_str_with_hours(
+        normalized_time = normalize_time_str_with_hours(
             t,
             day_rules.get("open_time"),
             day_rules.get("close_time"),
@@ -2874,18 +2927,10 @@ def process_incoming_message(business, phone, text):
             return "ok", 200
 
         state["date"] = normalized_date
-        extracted_time = normalize_time_str_with_hours(
-            t,
-            day_rules.get("open_time"),
-            day_rules.get("close_time"),
-        )
         state["step"] = "awaiting_time"
 
-        if extracted_time:
-            state["_prefilled_time"] = extracted_time
-        else:
-            send_friendly_message(phone, business, lang, tr(lang, "ask_time"), purpose="ask_time")
-            return "ok", 200
+        send_friendly_message(phone, business, lang, tr(lang, "ask_time"), purpose="ask_time")
+        return "ok", 200
 
     # STEP 4 – TIME
     if state and state.get("step") == "awaiting_time":
@@ -2900,7 +2945,7 @@ def process_incoming_message(business, phone, text):
             send_friendly_message(phone, business, lang, tr(lang, "closed_day"), purpose="availability")
             return "ok", 200
 
-        time_ = state.pop("_prefilled_time", None) or normalize_time_str_with_hours(
+        time_ = normalize_time_str_with_hours(
             t,
             day_rules.get("open_time"),
             day_rules.get("close_time"),
@@ -3369,11 +3414,13 @@ def webhook():
             return challenge, 200
         return "Forbidden", 403
 
-    raw = request.get_data(as_text=True)
-    print("RAW META:", raw, flush=True)
+    remote_ip = request.headers.get("X-Forwarded-For", request.remote_addr or "unknown").split(",")[0].strip()
+    if is_rate_limited("webhook", remote_ip, limit=240, window_seconds=60):
+        print("Webhook rate limit triggered for", remote_ip, flush=True)
+        return "ok", 200
 
     data = request.get_json(silent=True)
-    print("INCOMING META:", data, flush=True)
+    safe_log("Webhook received")
     sys.stdout.flush()
 
     try:
@@ -3409,10 +3456,11 @@ def webhook():
     phone = message.get("from")
     text = message.get("text", {}).get("body", "").strip()
     phone_number_id = value["metadata"]["phone_number_id"]
-    print("phone:", phone, "text:", text, "phone_number_id:", phone_number_id, flush=True)
+    safe_log("message_id:", message_id)
+    safe_log("phone_number_id:", phone_number_id)
 
     business = get_business_by_phone_number_id(phone_number_id)
-    print("business lookup result:", dict(business) if business else None, flush=True)
+    safe_log("business_found:", bool(business))
     if not business:
         clear_message_processing(message_id)
         print("No business configured for phone_number_id", phone_number_id, flush=True)
@@ -3450,20 +3498,38 @@ def admin_businesses():
         calendar_id = request.form.get("calendar_id", "primary").strip()
         timezone = request.form.get("timezone", "Asia/Beirut").strip()
 
-        if name and phone_number_id and access_token:
-            c.execute(
-                """
-                INSERT INTO businesses (name, provider, phone_number_id, access_token, calendar_id, timezone)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                ON CONFLICT (phone_number_id) DO UPDATE SET
-                  name = EXCLUDED.name,
-                  provider = EXCLUDED.provider,
-                  access_token = EXCLUDED.access_token,
-                  calendar_id = EXCLUDED.calendar_id,
-                  timezone = EXCLUDED.timezone
-                """,
-                (name, provider, phone_number_id, access_token, calendar_id, timezone),
-            )
+        submitted_token = access_token
+        if submitted_token and "*" in submitted_token:
+            submitted_token = ""
+
+        if name and phone_number_id:
+            if submitted_token:
+                c.execute(
+                    """
+                    INSERT INTO businesses (name, provider, phone_number_id, access_token, calendar_id, timezone)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (phone_number_id) DO UPDATE SET
+                      name = EXCLUDED.name,
+                      provider = EXCLUDED.provider,
+                      access_token = EXCLUDED.access_token,
+                      calendar_id = EXCLUDED.calendar_id,
+                      timezone = EXCLUDED.timezone
+                    """,
+                    (name, provider, phone_number_id, submitted_token, calendar_id, timezone),
+                )
+            else:
+                c.execute(
+                    """
+                    INSERT INTO businesses (name, provider, phone_number_id, calendar_id, timezone)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (phone_number_id) DO UPDATE SET
+                      name = EXCLUDED.name,
+                      provider = EXCLUDED.provider,
+                      calendar_id = EXCLUDED.calendar_id,
+                      timezone = EXCLUDED.timezone
+                    """,
+                    (name, provider, phone_number_id, calendar_id, timezone),
+                )
             conn.commit()
 
         conn.close()
@@ -3493,12 +3559,18 @@ def admin_businesses():
             """
         )
 
-    businesses = c.fetchall()
+    businesses = [dict(b) for b in c.fetchall()]
     conn.close()
 
     total_businesses = len(businesses)
     whatsapp_active = sum(1 for b in businesses if b.get("access_token"))
     calendar_connected = sum(1 for b in businesses if b.get("gcal_credentials"))
+
+    for b in businesses:
+        raw_token = (b.get("access_token") or "").strip()
+        raw_gcal = b.get("gcal_credentials")
+        b["access_token"] = ("*" * max(len(raw_token) - 4, 0) + raw_token[-4:]) if raw_token else ""
+        b["gcal_credentials"] = "Configured" if raw_gcal else ""
 
     return render_template(
         "admin_businesses.html",
@@ -3649,6 +3721,7 @@ def register():
         )
 
         conn.commit()
+        session.permanent = True
         session["business_id"] = business_id
         return redirect("/dashboard?tab=settings")
 
@@ -3663,6 +3736,10 @@ def register():
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
+        remote_ip = request.headers.get("X-Forwarded-For", request.remote_addr or "unknown").split(",")[0].strip()
+        if is_rate_limited("login", remote_ip, limit=10, window_seconds=60):
+            return render_template("login.html", error="Too many login attempts. Please wait a minute and try again.")
+
         username = request.form.get("username", "").strip().lower()
         password = request.form.get("password", "").strip()
 
@@ -3680,6 +3757,7 @@ def login():
         conn.close()
 
         if user and check_password_hash(user["password_hash"], password):
+            session.permanent = True
             session["user_id"] = user["id"]
             session["business_id"] = user["business_id"]
             session["role"] = user.get("role", "business")
@@ -4416,7 +4494,7 @@ def reschedule_reservation(reservation_id):
     c.execute(
         """
         SELECT id, customer_name, customer_phone, service, status, google_event_id,
-               resource_id, resource_name_snapshot, date, time
+               resource_id, resource_name_snapshot
         FROM reservations
         WHERE id = %s AND business_id = %s
         LIMIT 1

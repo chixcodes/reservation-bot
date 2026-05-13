@@ -189,6 +189,7 @@
                             <p class="text-sm text-slate-500">For phone calls, walk-ins, or staff-created bookings.</p>
                         </div>
                         <form method="post" action="/reservations/manual-add" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+                            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
                             <div>
                                 <label class="block text-sm font-medium mb-2">Customer Name</label>
                                 <input name="customer_name" required class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
@@ -358,6 +359,7 @@
 
                                         <td class="px-5 py-4">
                                             <form method="post" action="/reservations/update-note/{{ r.id }}" class="flex gap-2">
+                                                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
                                                 <input
                                                     type="text"
                                                     name="note"
@@ -424,6 +426,7 @@
                         <div class="lg:col-span-1 bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
                             <h2 class="text-lg font-semibold mb-4">Add Service</h2>
                             <form method="post" action="/services/add" class="space-y-4">
+                                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
                                 <div>
                                     <label class="block text-sm font-medium mb-2">Service Name</label>
                                     <input name="name" required class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
@@ -455,6 +458,7 @@
                                     </div>
 
                                     <form method="post" action="/services/delete/{{ s.id }}" class="mt-6">
+                                        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
                                         <button type="submit" class="text-red-600 hover:text-red-700 text-sm font-medium">
                                             Delete
                                         </button>
@@ -476,6 +480,7 @@
                         <div class="xl:col-span-1 bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
                             <h2 class="text-lg font-semibold mb-4">Add Resource</h2>
                             <form method="post" action="/resources/add" class="space-y-4">
+                                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
                                 <div>
                                     <label class="block text-sm font-medium mb-2">Name</label>
                                     <input name="name" required placeholder="Charbel, Court 1, Dr. Maya..."
@@ -565,6 +570,7 @@
                                         <div>
                                             <h4 class="font-medium mb-3">Edit Resource</h4>
                                             <form method="post" action="/resources/update/{{ r.id }}" class="space-y-3">
+                                                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
                                                 <div>
                                                     <label class="block text-sm font-medium mb-2">Name</label>
                                                     <input name="name" value="{{ r.name }}" required
@@ -617,6 +623,7 @@
                                         <div>
                                             <h4 class="font-medium mb-3">Assign Services</h4>
                                             <form method="post" action="/resources/assign-services/{{ r.id }}" class="space-y-3">
+                                                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
                                                 <div class="max-h-56 overflow-y-auto rounded-xl border border-slate-200 p-4 space-y-3 bg-slate-50">
                                                     {% if service_options %}
                                                         {% for s in service_options %}
@@ -640,13 +647,15 @@
 
                                             <div class="flex flex-wrap gap-3 mt-4">
                                                 <form method="post" action="/resources/toggle/{{ r.id }}">
+                                                    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
                                                     <button type="submit"
                                                             class="inline-flex px-4 py-2 rounded-lg {% if r.is_active %}bg-yellow-100 text-yellow-800 hover:bg-yellow-200{% else %}bg-green-100 text-green-800 hover:bg-green-200{% endif %} text-sm font-medium">
                                                         {% if r.is_active %}Deactivate{% else %}Activate{% endif %}
                                                     </button>
                                                 </form>
 
-                                                <form method="post" action="/resources/delete/{{ r.id }}"
+                                                <form method="post" action="/resources/delete/{{ r.id }}">
+                                                    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
                                                       onsubmit="return confirm('Delete this resource?');">
                                                     <button type="submit"
                                                             class="inline-flex px-4 py-2 rounded-lg bg-red-50 text-red-700 hover:bg-red-100 text-sm font-medium">
@@ -731,6 +740,7 @@
                         <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
                             <h2 class="text-lg font-semibold mb-4">Business Profile</h2>
                             <form method="post" action="/settings/update" class="space-y-4">
+                                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
                                 <div>
                                     <label class="block text-sm font-medium mb-2">Business Name</label>
                                     <input name="business_name" value="{{ business.name }}" required class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
@@ -806,6 +816,7 @@
                         <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
                             <h2 class="text-lg font-semibold mb-4">Weekly Availability</h2>
                             <form method="post" action="/availability/update-hours" class="space-y-4">
+                                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
                                 {% for h in hours %}
                                 <div class="grid grid-cols-12 gap-3 items-center">
                                     <div class="col-span-4 font-medium">{{ weekday_names[h.weekday] }}</div>
@@ -833,6 +844,7 @@
                             <h2 class="text-lg font-semibold mb-4">Blocked Dates</h2>
 
                             <form method="post" action="/availability/add-blocked-date" class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
                                 <input type="date" name="blocked_date" required class="rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
                                 <input type="text" name="note" placeholder="Reason (optional)" class="rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
                                 <button type="submit" class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-5 rounded-xl">
@@ -850,6 +862,7 @@
                                         {% endif %}
                                     </div>
                                     <form method="post" action="/availability/delete-blocked-date/{{ b.id }}">
+                                        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
                                         <button type="submit" class="text-red-600 hover:text-red-700 text-sm font-medium">
                                             Remove
                                         </button>
@@ -958,6 +971,7 @@
         </div>
 
         <form id="rescheduleForm" method="post" action="" class="p-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
             <div>
                 <label class="block text-sm font-medium mb-2">New Date</label>
                 <input id="rescheduleDate" type="date" name="date" required class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
@@ -1015,26 +1029,6 @@
         modal.classList.remove("flex");
     }
 </script>
-<script>
-    function shouldPauseDashboardRefresh() {
-        const active = document.activeElement;
-        if (!active) return false;
 
-        const tag = (active.tagName || "").toUpperCase();
-        return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
-    }
-
-    function startDashboardAutoRefresh() {
-        setInterval(() => {
-            if (document.hidden) return;
-            if (shouldPauseDashboardRefresh()) return;
-
-            const url = new URL(window.location.href);
-            window.location.href = url.toString();
-        }, 60000); // 60 seconds
-    }
-
-    startDashboardAutoRefresh();
-</script>
 </body>
 </html>

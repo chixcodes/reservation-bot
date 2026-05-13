@@ -836,40 +836,99 @@ def compute_dashboard_report_metrics(business, services, reservations_rows):
                 return meta
         return {"price": 0.0, "duration": 45}
 
-    total = len(reservations_rows)
-    confirmed = sum(1 for r in reservations_rows if (r.get("status") or "").upper() == "CONFIRMED")
-    canceled = sum(1 for r in reservations_rows if (r.get("status") or "").upper() == "CANCELED")
-    done = sum(1 for r in reservations_rows if (r.get("status") or "").upper() == "DONE")
+    def summarize_metrics(rows):
+        total = len(rows)
+        confirmed = sum(1 for r in rows if (r.get("status") or "").upper() == "CONFIRMED")
+        canceled = sum(1 for r in rows if (r.get("status") or "").upper() == "CANCELED")
+        done = sum(1 for r in rows if (r.get("status") or "").upper() == "DONE")
 
-    total_booked_revenue = 0.0
-    total_done_revenue = 0.0
-    service_counts = {}
-    resource_counts = {}
+        total_booked_revenue = 0.0
+        total_done_revenue = 0.0
+        service_counts = {}
+        resource_counts = {}
 
-    for r in reservations_rows:
-        status = (r.get("status") or "").upper()
-        meta = get_meta(r.get("service"))
-        price = float(meta.get("price") or 0)
+        for r in rows:
+            status = (r.get("status") or "").upper()
+            meta = get_meta(r.get("service"))
+            price = float(meta.get("price") or 0)
 
-        if status in ("CONFIRMED", "DONE"):
-            total_booked_revenue += price
-        if status == "DONE":
-            total_done_revenue += price
+            if status in ("CONFIRMED", "DONE"):
+                total_booked_revenue += price
+            if status == "DONE":
+                total_done_revenue += price
 
-        service_name = (r.get("service") or "").strip()
-        if service_name:
-            service_counts[service_name] = service_counts.get(service_name, 0) + 1
+            service_name = (r.get("service") or "").strip()
+            if service_name:
+                service_counts[service_name] = service_counts.get(service_name, 0) + 1
 
-        resource_name = (r.get("resource_name_snapshot") or "").strip()
-        if resource_name:
-            resource_counts[resource_name] = resource_counts.get(resource_name, 0) + 1
+            resource_name = (r.get("resource_name_snapshot") or "").strip()
+            if resource_name:
+                resource_counts[resource_name] = resource_counts.get(resource_name, 0) + 1
 
-    top_service = max(service_counts.items(), key=lambda x: x[1])[0] if service_counts else "-"
-    top_resource = max(resource_counts.items(), key=lambda x: x[1])[0] if resource_counts else "-"
+        return {
+            "total_reservations": total,
+            "confirmed_reservations": confirmed,
+            "canceled_reservations": canceled,
+            "done_reservations": done,
+            "total_booked_revenue": total_booked_revenue,
+            "total_done_revenue": total_done_revenue,
+            "top_service": max(service_counts.items(), key=lambda x: x[1])[0] if service_counts else "-",
+            "top_resource": max(resource_counts.items(), key=lambda x: x[1])[0] if resource_counts else "-",
+        }
+
+    def build_trend(current, previous, good_when="up"):
+        if current == previous:
+            return {
+                "percent": 0,
+                "direction": "flat",
+                "good": False,
+                "bad": False,
+                "label": "No change vs previous 7 days",
+            }
+
+        if previous <= 0:
+            percent = 100 if current > 0 else 0
+        else:
+            percent = int(round(abs(((current - previous) / previous) * 100)))
+
+        direction = "up" if current > previous else "down"
+        good = (direction == "up" and good_when == "up") or (direction == "down" and good_when == "down")
+        bad = (direction == "up" and good_when == "down") or (direction == "down" and good_when == "up")
+
+        return {
+            "percent": percent,
+            "direction": direction,
+            "good": good,
+            "bad": bad,
+            "label": f"vs previous 7 days",
+        }
+
+    overall = summarize_metrics(reservations_rows)
+
+    tz = pytz.timezone(business.get("timezone") or "Asia/Beirut")
+    today = datetime.now(tz).date()
+    current_start = today - timedelta(days=6)
+    previous_start = today - timedelta(days=13)
+    previous_end = today - timedelta(days=7)
+
+    current_rows = []
+    previous_rows = []
+    for row in reservations_rows:
+        try:
+            row_date = datetime.strptime(row.get("date"), "%Y-%m-%d").date()
+        except Exception:
+            continue
+        if current_start <= row_date <= today:
+            current_rows.append(row)
+        elif previous_start <= row_date <= previous_end:
+            previous_rows.append(row)
+
+    current_metrics = summarize_metrics(current_rows)
+    previous_metrics = summarize_metrics(previous_rows)
 
     whatsapp_connected = bool(business.get("access_token"))
     minutes_per_reservation = 3 if whatsapp_connected else 2
-    estimated_time_saved_minutes = total * minutes_per_reservation
+    estimated_time_saved_minutes = overall["total_reservations"] * minutes_per_reservation
 
     savings_label = (
         "Estimated admin time saved with EzRezerve"
@@ -878,18 +937,17 @@ def compute_dashboard_report_metrics(business, services, reservations_rows):
     )
 
     return {
-        "total_reservations": total,
-        "confirmed_reservations": confirmed,
-        "canceled_reservations": canceled,
-        "done_reservations": done,
-        "total_booked_revenue": total_booked_revenue,
-        "total_done_revenue": total_done_revenue,
-        "top_service": top_service,
-        "top_resource": top_resource,
+        **overall,
         "estimated_time_saved_minutes": estimated_time_saved_minutes,
         "estimated_time_saved_hours": estimated_time_saved_minutes // 60,
         "estimated_time_saved_remainder_minutes": estimated_time_saved_minutes % 60,
         "savings_label": savings_label,
+        "trend_total_reservations": build_trend(current_metrics["total_reservations"], previous_metrics["total_reservations"], good_when="up"),
+        "trend_confirmed_reservations": build_trend(current_metrics["confirmed_reservations"], previous_metrics["confirmed_reservations"], good_when="up"),
+        "trend_canceled_reservations": build_trend(current_metrics["canceled_reservations"], previous_metrics["canceled_reservations"], good_when="down"),
+        "trend_done_reservations": build_trend(current_metrics["done_reservations"], previous_metrics["done_reservations"], good_when="up"),
+        "trend_total_booked_revenue": build_trend(current_metrics["total_booked_revenue"], previous_metrics["total_booked_revenue"], good_when="up"),
+        "trend_total_done_revenue": build_trend(current_metrics["total_done_revenue"], previous_metrics["total_done_revenue"], good_when="up"),
     }
 
 

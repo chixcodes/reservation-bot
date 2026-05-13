@@ -23,14 +23,17 @@
                     <p class="text-slate-400 text-xs uppercase tracking-wide">Now</p>
                     <p class="text-xl md:text-2xl font-semibold">{{ now_display }}</p>
                 </div>
+
                 <div class="bg-slate-900 border border-slate-800 rounded-2xl px-4 py-3">
                     <p class="text-slate-400 text-xs uppercase tracking-wide">Today</p>
                     <p class="text-xl md:text-2xl font-semibold">{{ today_display }}</p>
                 </div>
+
                 <a href="/dashboard" class="bg-slate-800/90 hover:bg-slate-700 rounded-2xl px-5 py-3 font-semibold border border-slate-700">
                     Dashboard
                 </a>
-                <button onclick="toggleFullscreen()" class="bg-indigo-600 hover:bg-indigo-700 rounded-2xl px-5 py-3 font-semibold">
+
+                <button id="fullscreenBtn" onclick="toggleFullscreen()" class="bg-indigo-600 hover:bg-indigo-700 rounded-2xl px-5 py-3 font-semibold">
                     Full Screen
                 </button>
             </div>
@@ -41,13 +44,21 @@
                 <p class="text-slate-400 text-sm">Upcoming Today</p>
                 <p class="text-4xl font-bold mt-2">{{ stats.total }}</p>
             </div>
+
             <div class="bg-slate-900 border border-slate-800 rounded-3xl p-5">
                 <p class="text-slate-400 text-sm">Confirmed</p>
                 <p class="text-4xl font-bold mt-2">{{ stats.confirmed }}</p>
             </div>
+
             <div class="bg-slate-900 border border-slate-800 rounded-3xl p-5">
                 <p class="text-slate-400 text-sm">Next At</p>
-                <p class="text-4xl font-bold mt-2">{{ next_reservation.time if next_reservation else '—' }}</p>
+                <p class="text-4xl font-bold mt-2">
+                    {% if next_reservation %}
+                        {{ next_reservation.time }}
+                    {% else %}
+                        --
+                    {% endif %}
+                </p>
             </div>
         </div>
 
@@ -126,6 +137,13 @@
     </div>
 
     <script>
+        const fullscreenBtn = document.getElementById("fullscreenBtn");
+
+        function syncFullscreenButton() {
+            if (!fullscreenBtn) return;
+            fullscreenBtn.style.display = document.fullscreenElement ? "none" : "inline-flex";
+        }
+
         function toggleFullscreen() {
             if (!document.fullscreenElement) {
                 document.documentElement.requestFullscreen?.();
@@ -133,6 +151,9 @@
                 document.exitFullscreen?.();
             }
         }
+
+        document.addEventListener("fullscreenchange", syncFullscreenButton);
+        syncFullscreenButton();
     </script>
 </body>
 </html>

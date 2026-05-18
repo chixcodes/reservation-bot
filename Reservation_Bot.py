@@ -26,6 +26,8 @@ import pytz
 import sys
 import time
 from urllib.parse import quote_plus
+import secrets
+from flask import abort
 # ------------------ BUSINESS HELPERS ------------------
 
 processed_message_ids = {}
@@ -116,6 +118,35 @@ def get_business_by_id(business_id: int):
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "change-me-in-render")
 
+def get_csrf_token():
+    token = session.get("_csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["_csrf_token"] = token
+    return token
+
+app.jinja_env.globals["csrf_token"] = get_csrf_token
+
+@app.before_request
+def csrf_protect():
+    if request.method != "POST":
+        return
+
+    # Skip routes that should not use form CSRF
+    if request.path == "/webhook":
+        return
+    if request.path.startswith("/login"):
+        return
+    if request.path.startswith("/register"):
+        return
+    if request.path.startswith("/admin/"):
+        return
+
+    session_token = session.get("_csrf_token", "")
+    form_token = request.form.get("_csrf_token", "")
+
+    if not session_token or not form_token or session_token != form_token:
+        abort(403)
 # ------------------ CONFIG (.env) ------------------
 
 load_dotenv()

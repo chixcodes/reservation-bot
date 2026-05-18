@@ -8,3 +8,4 @@ google-api-python-client
 pytz
 python-dateutil
 psycopg2-binary
+gunicorn

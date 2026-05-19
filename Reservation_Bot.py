@@ -147,6 +147,275 @@ def csrf_protect():
 
     if not session_token or not form_token or session_token != form_token:
         abort(403)
+
+
+_fb_tables_ready = False
+
+def ensure_fb_tables():
+    global _fb_tables_ready
+    if _fb_tables_ready:
+        return
+
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fb_products (
+            id SERIAL PRIMARY KEY,
+            business_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            price NUMERIC(10,2) NOT NULL DEFAULT 0,
+            is_active BOOLEAN NOT NULL DEFAULT TRUE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """
+    )
+
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fb_sales (
+            id SERIAL PRIMARY KEY,
+            business_id INTEGER NOT NULL,
+            total_amount NUMERIC(10,2) NOT NULL DEFAULT 0,
+            sold_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """
+    )
+
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fb_sale_items (
+            id SERIAL PRIMARY KEY,
+            sale_id INTEGER NOT NULL REFERENCES fb_sales(id) ON DELETE CASCADE,
+            product_id INTEGER,
+            product_name_snapshot TEXT NOT NULL,
+            quantity INTEGER NOT NULL DEFAULT 1,
+            unit_price NUMERIC(10,2) NOT NULL DEFAULT 0,
+            line_total NUMERIC(10,2) NOT NULL DEFAULT 0
+        )
+        """
+    )
+
+    c.execute("CREATE INDEX IF NOT EXISTS idx_fb_products_business ON fb_products (business_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_fb_sales_business_sold_at ON fb_sales (business_id, sold_at DESC)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_fb_sale_items_sale_id ON fb_sale_items (sale_id)")
+
+    conn.commit()
+    conn.close()
+    _fb_tables_ready = True
+
+
+def safe_float(value, default=0.0):
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def safe_int(value, default=0):
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def get_fb_products(business_id, active_only=False):
+    ensure_fb_tables()
+    conn = get_db_connection()
+    c = conn.cursor()
+    if active_only:
+        c.execute(
+            """
+            SELECT id, business_id, name, price, is_active, created_at, updated_at
+            FROM fb_products
+            WHERE business_id = %s AND is_active = TRUE
+            ORDER BY id ASC
+            """,
+            (business_id,),
+        )
+    else:
+        c.execute(
+            """
+            SELECT id, business_id, name, price, is_active, created_at, updated_at
+            FROM fb_products
+            WHERE business_id = %s
+            ORDER BY id ASC
+            """,
+            (business_id,),
+        )
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+
+def get_fb_recent_sales(business, limit=10):
+    ensure_fb_tables()
+    business_id = business["id"]
+    tz = pytz.timezone(business.get("timezone") or "Asia/Beirut")
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT id, total_amount, sold_at
+        FROM fb_sales
+        WHERE business_id = %s
+        ORDER BY sold_at DESC, id DESC
+        LIMIT %s
+        """,
+        (business_id, limit),
+    )
+    sales = c.fetchall()
+
+    sale_ids = [row["id"] for row in sales]
+    items_by_sale = {}
+    if sale_ids:
+        c.execute(
+            """
+            SELECT sale_id, product_name_snapshot, quantity
+            FROM fb_sale_items
+            WHERE sale_id = ANY(%s)
+            ORDER BY id ASC
+            """,
+            (sale_ids,),
+        )
+        for row in c.fetchall():
+            items_by_sale.setdefault(row["sale_id"], []).append(
+                f'{row["quantity"]}x {row["product_name_snapshot"]}'
+            )
+
+    conn.close()
+
+    results = []
+    for sale in sales:
+        sold_at = sale.get("sold_at")
+        sold_at_display = "-"
+        if sold_at:
+            try:
+                if sold_at.tzinfo is None:
+                    sold_at = pytz.utc.localize(sold_at)
+                sold_at_display = sold_at.astimezone(tz).strftime("%d %b %H:%M")
+            except Exception:
+                try:
+                    sold_at_display = sold_at.strftime("%d %b %H:%M")
+                except Exception:
+                    sold_at_display = str(sold_at)
+
+        results.append(
+            {
+                "id": sale["id"],
+                "total_amount": float(sale.get("total_amount") or 0),
+                "sold_at_display": sold_at_display,
+                "items_summary": ", ".join(items_by_sale.get(sale["id"], [])) or "-",
+            }
+        )
+
+    return results
+
+
+def compute_fb_report_metrics(business):
+    ensure_fb_tables()
+    business_id = business["id"]
+    tz = pytz.timezone(business.get("timezone") or "Asia/Beirut")
+    today = datetime.now(tz).date()
+    current_start = today - timedelta(days=6)
+    previous_start = today - timedelta(days=13)
+    previous_end = today - timedelta(days=7)
+
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    c.execute(
+        """
+        SELECT id, total_amount, sold_at
+        FROM fb_sales
+        WHERE business_id = %s
+        ORDER BY sold_at DESC, id DESC
+        """,
+        (business_id,),
+    )
+    sales = c.fetchall()
+
+    c.execute(
+        """
+        SELECT
+            s.sold_at,
+            i.product_name_snapshot,
+            i.quantity,
+            i.line_total
+        FROM fb_sale_items i
+        JOIN fb_sales s ON s.id = i.sale_id
+        WHERE s.business_id = %s
+        ORDER BY s.sold_at DESC, i.id DESC
+        """,
+        (business_id,),
+    )
+    items = c.fetchall()
+    conn.close()
+
+    weekly_fb_revenue = 0.0
+    previous_weekly_fb_revenue = 0.0
+    fb_total_revenue = 0.0
+
+    for sale in sales:
+        sold_at = sale.get("sold_at")
+        if not sold_at:
+            continue
+
+        try:
+            if sold_at.tzinfo is None:
+                sold_at_local = pytz.utc.localize(sold_at).astimezone(tz)
+            else:
+                sold_at_local = sold_at.astimezone(tz)
+        except Exception:
+            sold_at_local = sold_at
+
+        sold_date = sold_at_local.date()
+        amount = float(sale.get("total_amount") or 0)
+        fb_total_revenue += amount
+
+        if current_start <= sold_date <= today:
+            weekly_fb_revenue += amount
+        elif previous_start <= sold_date <= previous_end:
+            previous_weekly_fb_revenue += amount
+
+    weekly_item_map = {}
+    for row in items:
+        sold_at = row.get("sold_at")
+        if not sold_at:
+            continue
+        try:
+            if sold_at.tzinfo is None:
+                sold_at_local = pytz.utc.localize(sold_at).astimezone(tz)
+            else:
+                sold_at_local = sold_at.astimezone(tz)
+        except Exception:
+            sold_at_local = sold_at
+
+        sold_date = sold_at_local.date()
+        if not (current_start <= sold_date <= today):
+            continue
+
+        name = (row.get("product_name_snapshot") or "Unnamed item").strip()
+        weekly_item_map.setdefault(name, {"name": name, "quantity": 0, "revenue": 0.0})
+        weekly_item_map[name]["quantity"] += int(row.get("quantity") or 0)
+        weekly_item_map[name]["revenue"] += float(row.get("line_total") or 0)
+
+    weekly_items = sorted(
+        weekly_item_map.values(),
+        key=lambda x: (-x["revenue"], x["name"].lower()),
+    )
+
+    return {
+        "weekly_fb_revenue": weekly_fb_revenue,
+        "previous_weekly_fb_revenue": previous_weekly_fb_revenue,
+        "fb_total_revenue": fb_total_revenue,
+        "weekly_fb_items": weekly_items,
+    }
+
+
 # ------------------ CONFIG (.env) ------------------
 
 load_dotenv()
@@ -973,6 +1242,8 @@ def compute_dashboard_report_metrics(business, services, reservations_rows):
         "estimated_time_saved_hours": estimated_time_saved_minutes // 60,
         "estimated_time_saved_remainder_minutes": estimated_time_saved_minutes % 60,
         "savings_label": savings_label,
+        "weekly_reservations_revenue": current_metrics["total_booked_revenue"],
+        "previous_weekly_reservations_revenue": previous_metrics["total_booked_revenue"],
         "trend_total_reservations": build_trend(current_metrics["total_reservations"], previous_metrics["total_reservations"], good_when="up"),
         "trend_confirmed_reservations": build_trend(current_metrics["confirmed_reservations"], previous_metrics["confirmed_reservations"], good_when="up"),
         "trend_canceled_reservations": build_trend(current_metrics["canceled_reservations"], previous_metrics["canceled_reservations"], good_when="down"),
@@ -3873,6 +4144,8 @@ def dashboard():
     if not require_login():
         return redirect("/login")
 
+    ensure_fb_tables()
+
     requested_business_id = request.args.get("business_id", type=int)
 
     if is_support_user() and requested_business_id:
@@ -4023,6 +4296,17 @@ def dashboard():
     )
     all_reservations = c.fetchall()
 
+    c.execute(
+        """
+        SELECT id, business_id, name, price, is_active, created_at, updated_at
+        FROM fb_products
+        WHERE business_id = %s
+        ORDER BY id ASC
+        """,
+        (business_id,),
+    )
+    fb_products = c.fetchall()
+
     conn.close()
 
     visible_reservations = []
@@ -4107,6 +4391,13 @@ def dashboard():
     )
 
     report_metrics = compute_dashboard_report_metrics(business, services, all_reservations)
+    fb_report_metrics = compute_fb_report_metrics(business)
+    report_metrics.update(fb_report_metrics)
+    report_metrics["weekly_total_revenue"] = (
+        float(report_metrics.get("weekly_reservations_revenue") or 0)
+        + float(report_metrics.get("weekly_fb_revenue") or 0)
+    )
+    fb_recent_sales = get_fb_recent_sales(business, limit=10)
 
     return render_template(
         "dashboard.html",
@@ -4118,6 +4409,8 @@ def dashboard():
         resource_services_map=resource_services_map,
         hours=hours,
         blocked_dates=blocked_dates,
+        fb_products=fb_products,
+        fb_recent_sales=fb_recent_sales,
         weekday_names=WEEKDAY_NAMES,
         active_tab=request.args.get("tab", "reservations"),
         google_calendar_connected=should_attempt_calendar_sync(business),
@@ -4700,10 +4993,174 @@ def delete_blocked_date(block_id):
     return redirect("/dashboard?tab=settings")
 
 
+@app.route("/fb/products/add", methods=["POST"])
+def add_fb_product():
+    if "business_id" not in session:
+        return redirect("/login")
+
+    ensure_fb_tables()
+    business_id = session["business_id"]
+    name = (request.form.get("name") or "").strip()
+    price = safe_float(request.form.get("price") or 0, 0.0)
+
+    if not name:
+        return dashboard_redirect_with_toast("Please enter a product name.", "error", "fb")
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        INSERT INTO fb_products (business_id, name, price, is_active)
+        VALUES (%s, %s, %s, TRUE)
+        """,
+        (business_id, name, price),
+    )
+    conn.commit()
+    conn.close()
+
+    return dashboard_redirect_with_toast("F&B product added successfully.", "success", "fb")
+
+
+@app.route("/fb/products/update/<int:product_id>", methods=["POST"])
+def update_fb_product(product_id):
+    if "business_id" not in session:
+        return redirect("/login")
+
+    ensure_fb_tables()
+    business_id = session["business_id"]
+    name = (request.form.get("name") or "").strip()
+    price = safe_float(request.form.get("price") or 0, 0.0)
+    is_active = request.form.get("is_active") == "on"
+
+    if not name:
+        return dashboard_redirect_with_toast("Product name cannot be empty.", "error", "fb")
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        UPDATE fb_products
+        SET name = %s,
+            price = %s,
+            is_active = %s,
+            updated_at = NOW()
+        WHERE id = %s AND business_id = %s
+        """,
+        (name, price, is_active, product_id, business_id),
+    )
+    conn.commit()
+    conn.close()
+
+    return dashboard_redirect_with_toast("F&B product updated successfully.", "success", "fb")
+
+
+@app.route("/fb/products/delete/<int:product_id>", methods=["POST"])
+def delete_fb_product(product_id):
+    if "business_id" not in session:
+        return redirect("/login")
+
+    ensure_fb_tables()
+    business_id = session["business_id"]
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        DELETE FROM fb_products
+        WHERE id = %s AND business_id = %s
+        """,
+        (product_id, business_id),
+    )
+    conn.commit()
+    conn.close()
+
+    return dashboard_redirect_with_toast("F&B product deleted.", "success", "fb")
+
+
+@app.route("/fb/sales/close", methods=["POST"])
+def close_fb_sale():
+    if "business_id" not in session:
+        return redirect("/login")
+
+    ensure_fb_tables()
+    business_id = session["business_id"]
+    products = get_fb_products(business_id, active_only=True)
+
+    items = []
+    total_amount = 0.0
+
+    for product in products:
+        qty = safe_int(request.form.get(f"qty_{product['id']}") or 0, 0)
+        if qty <= 0:
+            continue
+
+        unit_price = float(product.get("price") or 0)
+        line_total = unit_price * qty
+        total_amount += line_total
+        items.append(
+            {
+                "product_id": product["id"],
+                "product_name_snapshot": product["name"],
+                "quantity": qty,
+                "unit_price": unit_price,
+                "line_total": line_total,
+            }
+        )
+
+    if not items:
+        return dashboard_redirect_with_toast("Choose at least one F&B item before closing the sale.", "error", "fb")
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        INSERT INTO fb_sales (business_id, total_amount)
+        VALUES (%s, %s)
+        RETURNING id
+        """,
+        (business_id, total_amount),
+    )
+    sale_row = c.fetchone()
+    sale_id = sale_row["id"] if isinstance(sale_row, dict) else sale_row[0]
+
+    for item in items:
+        c.execute(
+            """
+            INSERT INTO fb_sale_items (
+                sale_id,
+                product_id,
+                product_name_snapshot,
+                quantity,
+                unit_price,
+                line_total
+            )
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (
+                sale_id,
+                item["product_id"],
+                item["product_name_snapshot"],
+                item["quantity"],
+                item["unit_price"],
+                item["line_total"],
+            ),
+        )
+
+    conn.commit()
+    conn.close()
+
+    return dashboard_redirect_with_toast(
+        f"F&B sale closed successfully (${total_amount:.2f}).",
+        "success",
+        "fb",
+    )
+
+
 # ------------------ RUN ------------------
 
 if __name__ == "__main__":
     init_db()       # <-- creates tables automatically
+    ensure_fb_tables()
     app.run(host="0.0.0.0", port=10000)
 
 

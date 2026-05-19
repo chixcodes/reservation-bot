@@ -36,6 +36,9 @@
                 <button type="button" onclick="switchTab('settings')" data-tab="settings" class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
                     Settings
                 </button>
+                <button type="button" onclick="switchTab('fb')" data-tab="fb" class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
+                    F&B
+                </button>
                 <button type="button" onclick="switchTab('reports')" data-tab="reports" class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
                     Reports
                 </button>
@@ -78,6 +81,9 @@
                 </button>
                 <button type="button" onclick="switchTab('settings')" data-tab="settings" class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
                     Settings
+                </button>
+                <button type="button" onclick="switchTab('fb')" data-tab="fb" class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
+                    F&B
                 </button>
                 <button type="button" onclick="switchTab('reports')" data-tab="reports" class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
                     Reports
@@ -822,11 +828,168 @@
                     </div>
                 </div>
 
+
+                <!-- F&B TAB -->
+                <div id="tab-fb" class="tab-content">
+                    <div class="mb-6">
+                        <h2 class="text-xl font-semibold">F&B</h2>
+                        <p class="text-sm text-slate-500">Manage snack and drink products, close sales, and add F&B revenue to your weekly reports.</p>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                        <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+                            <p class="text-sm text-slate-500">Active Products</p>
+                            <p class="text-3xl font-bold mt-2">{{ fb_products | selectattr("is_active") | list | length }}</p>
+                        </div>
+                        <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+                            <p class="text-sm text-slate-500">Weekly F&B Revenue</p>
+                            <p class="text-3xl font-bold mt-2">${{ "%.2f"|format(report_metrics.weekly_fb_revenue) }}</p>
+                        </div>
+                        <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+                            <p class="text-sm text-slate-500">Total F&B Revenue</p>
+                            <p class="text-3xl font-bold mt-2">${{ "%.2f"|format(report_metrics.fb_total_revenue) }}</p>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 xl:grid-cols-3 gap-6 mb-6">
+                        <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+                            <h3 class="text-lg font-semibold mb-4">Add Product</h3>
+                            <form method="post" action="/fb/products/add" class="space-y-4">
+                                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                                <div>
+                                    <label class="block text-sm font-medium mb-2">Product Name</label>
+                                    <input name="name" required class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="Water, Energy Drink, Chips...">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium mb-2">Price</label>
+                                    <input name="price" type="number" step="0.01" min="0" required class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="0.00">
+                                </div>
+                                <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-xl">
+                                    Save Product
+                                </button>
+                            </form>
+                        </div>
+
+                        <div class="xl:col-span-2 bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+                            <div class="flex items-center justify-between gap-3 mb-4">
+                                <h3 class="text-lg font-semibold">Close F&B Sale</h3>
+                                <span class="text-sm text-slate-500">Enter quantities and close the sale</span>
+                            </div>
+
+                            <form method="post" action="/fb/sales/close">
+                                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                                <div class="space-y-3">
+                                    {% for p in fb_products %}
+                                    {% if p.is_active %}
+                                    <div class="grid grid-cols-12 gap-3 items-center rounded-xl border border-slate-200 p-4">
+                                        <div class="col-span-6">
+                                            <p class="font-semibold">{{ p.name }}</p>
+                                            <p class="text-sm text-slate-500">${{ "%.2f"|format(p.price) }}</p>
+                                        </div>
+                                        <div class="col-span-3">
+                                            <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1">Qty</label>
+                                            <input type="number" name="qty_{{ p.id }}" min="0" value="0" class="w-full rounded-lg border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                        </div>
+                                        <div class="col-span-3 text-right">
+                                            <span class="inline-flex px-3 py-2 rounded-lg bg-slate-100 text-slate-700 text-sm font-medium">Ready</span>
+                                        </div>
+                                    </div>
+                                    {% endif %}
+                                    {% else %}
+                                    <div class="rounded-xl border border-dashed border-slate-300 p-6 text-center text-slate-500">
+                                        Add your 4 F&B products first, then close sales from here.
+                                    </div>
+                                    {% endfor %}
+                                </div>
+
+                                <div class="mt-4 flex justify-end">
+                                    <button type="submit" class="bg-slate-900 hover:bg-slate-800 text-white font-semibold py-3 px-5 rounded-xl">
+                                        Close Sale
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                        <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+                            <h3 class="text-lg font-semibold mb-4">Products</h3>
+                            <div class="space-y-4">
+                                {% for p in fb_products %}
+                                <div class="rounded-2xl border border-slate-200 p-4">
+                                    <form method="post" action="/fb/products/update/{{ p.id }}" class="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+                                        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                                        <div class="md:col-span-5">
+                                            <label class="block text-sm font-medium mb-2">Name</label>
+                                            <input name="name" value="{{ p.name }}" required class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                        </div>
+                                        <div class="md:col-span-3">
+                                            <label class="block text-sm font-medium mb-2">Price</label>
+                                            <input name="price" type="number" step="0.01" min="0" value="{{ '%.2f'|format(p.price) }}" required class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                        </div>
+                                        <div class="md:col-span-2">
+                                            <label class="inline-flex items-center gap-2 text-sm font-medium h-full">
+                                                <input type="checkbox" name="is_active" {% if p.is_active %}checked{% endif %}>
+                                                Active
+                                            </label>
+                                        </div>
+                                        <div class="md:col-span-2">
+                                            <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-xl text-sm">Save</button>
+                                        </div>
+                                    </form>
+
+                                    <form method="post" action="/fb/products/delete/{{ p.id }}" onsubmit="return confirm('Delete this F&B product?');" class="mt-3">
+                                        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                                        <button type="submit" class="w-full bg-red-50 hover:bg-red-100 text-red-700 font-semibold py-3 rounded-xl text-sm">Delete</button>
+                                    </form>
+                                </div>
+                                {% else %}
+                                <div class="rounded-xl border border-dashed border-slate-300 p-6 text-center text-slate-500">
+                                    No F&B products yet.
+                                </div>
+                                {% endfor %}
+                            </div>
+                        </div>
+
+                        <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+                            <h3 class="text-lg font-semibold mb-4">Recent F&B Sales</h3>
+                            <div class="space-y-3">
+                                {% for sale in fb_recent_sales %}
+                                <div class="rounded-xl border border-slate-200 px-4 py-3">
+                                    <div class="flex items-center justify-between gap-3">
+                                        <p class="font-semibold">${{ "%.2f"|format(sale.total_amount) }}</p>
+                                        <p class="text-sm text-slate-500">{{ sale.sold_at_display }}</p>
+                                    </div>
+                                    <p class="text-sm text-slate-500 mt-1">{{ sale.items_summary }}</p>
+                                </div>
+                                {% else %}
+                                <p class="text-slate-500 text-sm">No F&B sales yet.</p>
+                                {% endfor %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- REPORTS TAB -->
                 <div id="tab-reports" class="tab-content">
                     <div class="mb-6">
                         <h2 class="text-xl font-semibold">Reports & Insights</h2>
                         <p class="text-sm text-slate-500">Track business activity and estimate the time EzRezerve helps you save.</p>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                        <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+                            <p class="text-sm text-slate-500">Weekly Reservations Revenue</p>
+                            <p class="text-3xl font-bold mt-2">${{ "%.2f"|format(report_metrics.weekly_reservations_revenue) }}</p>
+                        </div>
+                        <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+                            <p class="text-sm text-slate-500">Weekly F&B Revenue</p>
+                            <p class="text-3xl font-bold mt-2">${{ "%.2f"|format(report_metrics.weekly_fb_revenue) }}</p>
+                        </div>
+                        <div class="bg-indigo-600 text-white rounded-2xl p-5 shadow-sm">
+                            <p class="text-sm text-indigo-100">Total Weekly Revenue</p>
+                            <p class="text-3xl font-bold mt-2">${{ "%.2f"|format(report_metrics.weekly_total_revenue) }}</p>
+                        </div>
                     </div>
 
                     <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
@@ -929,6 +1092,30 @@
                             <p class="text-4xl font-bold mt-2">{{ report_metrics.top_resource }}</p>
                         </div>
                     </div>
+
+                    <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm mt-6">
+                        <div class="flex items-center justify-between gap-3 mb-4">
+                            <div>
+                                <p class="text-sm text-slate-500">F&B Weekly Revenue by Item</p>
+                                <h3 class="text-lg font-semibold mt-1">This week</h3>
+                            </div>
+                            <span class="text-sm text-slate-500">${{ "%.2f"|format(report_metrics.weekly_fb_revenue) }}</span>
+                        </div>
+
+                        <div class="space-y-3">
+                            {% for item in report_metrics.weekly_fb_items %}
+                            <div class="flex items-center justify-between rounded-xl border border-slate-200 px-4 py-3">
+                                <div>
+                                    <p class="font-semibold">{{ item.name }}</p>
+                                    <p class="text-sm text-slate-500">{{ item.quantity }} sold this week</p>
+                                </div>
+                                <p class="font-semibold">${{ "%.2f"|format(item.revenue) }}</p>
+                            </div>
+                            {% else %}
+                            <p class="text-slate-500 text-sm">No F&B sales recorded this week yet.</p>
+                            {% endfor %}
+                        </div>
+                    </div>
                 </div>
 
             </div>
@@ -952,6 +1139,7 @@
                 services: "Services",
                 resources: "Resources",
                 settings: "Settings",
+                fb: "F&B",
                 reports: "Reports"
             };
 

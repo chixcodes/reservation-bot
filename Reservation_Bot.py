@@ -199,6 +199,7 @@ def ensure_fb_tables():
 
 _business_feature_columns_ready = False
 _reservation_extension_columns_ready = False
+_service_capacity_columns_ready = False
 
 def ensure_business_feature_columns():
     global _business_feature_columns_ready
@@ -232,6 +233,19 @@ def ensure_reservation_extension_columns():
 
     _reservation_extension_columns_ready = True
 
+
+def ensure_service_capacity_columns():
+    global _service_capacity_columns_ready
+    if _service_capacity_columns_ready:
+        return
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("ALTER TABLE services ADD COLUMN IF NOT EXISTS capacity_units_required INTEGER NOT NULL DEFAULT 1")
+    conn.commit()
+    conn.close()
+
+    _service_capacity_columns_ready = True
 
 
 _resource_availability_tables_ready = False
@@ -763,12 +777,15 @@ def ai_pick_service(business: dict, user_text: str):
 
 
 def get_service_info(business_id, service_name):
+    ensure_service_capacity_columns()
+
     conn = get_db_connection()
     c = conn.cursor()
 
     c.execute(
         """
-        SELECT name, price, duration_min
+        SELECT name, price, duration_min,
+               COALESCE(capacity_units_required, 1) AS capacity_units_required
         FROM services
         WHERE business_id = %s
           AND lower(trim(name)) = lower(trim(%s))
@@ -781,7 +798,8 @@ def get_service_info(business_id, service_name):
     if not row:
         c.execute(
             """
-            SELECT name, price, duration_min
+            SELECT name, price, duration_min,
+                   COALESCE(capacity_units_required, 1) AS capacity_units_required
             FROM services
             WHERE business_id = %s
               AND lower(name) LIKE lower(%s)
@@ -798,9 +816,10 @@ def get_service_info(business_id, service_name):
         return {
             "price": float(row["price"] or 0),
             "duration": int(row["duration_min"] or 45),
+            "capacity_units": int(row.get("capacity_units_required") or 1),
         }
 
-    return {"price": 0.0, "duration": 45}
+    return {"price": 0.0, "duration": 45, "capacity_units": 1}
 
 
 def get_service_names_for_business(business_id):
@@ -810,6 +829,10 @@ def get_service_names_for_business(business_id):
     rows = c.fetchall()
     conn.close()
     return [r["name"] for r in rows]
+
+
+def get_service_capacity_units(business_id, service_name):
+    return int(get_service_info(business_id, service_name).get("capacity_units", 1) or 1)
 
 
 def format_service_list(business_id):
@@ -1303,7 +1326,7 @@ def get_confirmed_reservations_for_date_fast(business_id, date_iso):
     c = conn.cursor()
     c.execute(
         """
-        SELECT id, service, time, resource_id
+        SELECT id, service, time, resource_id, COALESCE(extra_minutes, 0) AS extra_minutes
         FROM reservations
         WHERE business_id = %s
           AND date = %s
@@ -1329,6 +1352,7 @@ def compute_dashboard_report_metrics(business, services, reservations_rows):
         service_meta[(s["name"] or "").strip().lower()] = {
             "price": float(s.get("price") or 0),
             "duration": int(s.get("duration_min") or 45),
+            "capacity_units": int(s.get("capacity_units_required") or 1),
         }
 
     def get_meta(service_name):
@@ -1338,7 +1362,7 @@ def compute_dashboard_report_metrics(business, services, reservations_rows):
         for name, meta in service_meta.items():
             if cleaned in name or name in cleaned:
                 return meta
-        return {"price": 0.0, "duration": 45}
+        return {"price": 0.0, "duration": 45, "capacity_units": 1}
 
     def summarize_metrics(rows):
         total = len(rows)
@@ -1476,18 +1500,37 @@ def build_service_duration_cache(business_id, reservations_rows, extra_service_n
     return cache
 
 
+def build_service_capacity_cache(business_id, reservations_rows, extra_service_names=None):
+    names = set()
+    for row in reservations_rows:
+        if row.get("service"):
+            names.add(row["service"])
+
+    if extra_service_names:
+        for s in extra_service_names:
+            if s:
+                names.add(s)
+
+    cache = {}
+    for name in names:
+        cache[name] = int(get_service_info(business_id, name).get("capacity_units", 1))
+    return cache
+
+
 def is_resource_slot_full_fast(
     resource,
     reservations_rows,
     service_duration_cache,
+    service_capacity_cache,
     new_time,
     new_service,
 ):
     capacity = int(resource.get("capacity") or 1)
     new_duration = int(service_duration_cache.get(new_service, 45))
+    new_units = int(service_capacity_cache.get(new_service, 1))
     new_start = time_to_minutes(new_time)
 
-    overlapping = 0
+    overlapping_units = 0
     resource_id = resource["id"]
 
     for row in reservations_rows:
@@ -1500,13 +1543,14 @@ def is_resource_slot_full_fast(
 
         existing_start = time_to_minutes(existing_time)
         existing_duration = int(service_duration_cache.get(row["service"], 45))
+        existing_units = int(service_capacity_cache.get(row["service"], 1))
 
         if ranges_overlap(new_start, new_duration, existing_start, existing_duration):
-            overlapping += 1
-            if overlapping >= capacity:
+            overlapping_units += existing_units
+            if overlapping_units + new_units > capacity:
                 return True
 
-    return False
+    return (overlapping_units + new_units) > capacity
 
 
 def get_manual_reservation_resource_choice_fast(
@@ -1518,6 +1562,7 @@ def get_manual_reservation_resource_choice_fast(
     eligible_resources,
     reservations_rows,
     service_duration_cache,
+    service_capacity_cache,
 ):
     resource_id_raw = (resource_id_raw or "").strip()
 
@@ -1532,6 +1577,7 @@ def get_manual_reservation_resource_choice_fast(
                 r,
                 reservations_rows,
                 service_duration_cache,
+                service_capacity_cache,
                 time_,
                 service_name,
             ):
@@ -1572,6 +1618,7 @@ def get_manual_reservation_resource_choice_fast(
         resource,
         reservations_rows,
         service_duration_cache,
+        service_capacity_cache,
         time_,
         service_name,
     ):
@@ -1635,7 +1682,7 @@ def get_confirmed_resource_reservations_for_date(business_id, date_iso, resource
     c = conn.cursor()
     c.execute(
         """
-        SELECT resource_id, service, time
+        SELECT resource_id, service, time, COALESCE(extra_minutes, 0) AS extra_minutes
         FROM reservations
         WHERE business_id = %s
           AND date = %s
@@ -1663,22 +1710,42 @@ def get_service_duration_cached(business_id, service_name, cache=None):
     return duration
 
 
-def is_resource_slot_full_from_prefetched(business_id, resource, new_time, new_service, reservations_by_resource, service_duration_cache=None):
+def get_service_capacity_units_cached(business_id, service_name, cache=None):
+    key = (service_name or "").strip().lower()
+    if cache is not None and key in cache:
+        return cache[key]
+    units = int(get_service_info(business_id, service_name).get("capacity_units", 1))
+    if cache is not None:
+        cache[key] = units
+    return units
+
+
+def is_resource_slot_full_from_prefetched(
+    business_id,
+    resource,
+    new_time,
+    new_service,
+    reservations_by_resource,
+    service_duration_cache=None,
+    service_capacity_cache=None,
+):
     capacity = int(resource.get("capacity") or 1)
     new_duration = int(get_service_duration_cached(business_id, new_service, service_duration_cache))
+    new_units = int(get_service_capacity_units_cached(business_id, new_service, service_capacity_cache))
     new_start = time_to_minutes(new_time)
 
-    overlapping = 0
+    overlapping_units = 0
     for row in reservations_by_resource.get(resource["id"], []):
         existing_time = normalize_time_str(row["time"])
         if not existing_time:
             continue
         existing_duration = int(get_service_duration_cached(business_id, row["service"], service_duration_cache))
+        existing_units = int(get_service_capacity_units_cached(business_id, row["service"], service_capacity_cache))
         existing_start = time_to_minutes(existing_time)
         if ranges_overlap(new_start, new_duration, existing_start, existing_duration):
-            overlapping += 1
+            overlapping_units += existing_units
 
-    return overlapping >= capacity
+    return (overlapping_units + new_units) > capacity
 
 def reservation_has_ended(business, reservation):
     try:
@@ -1764,6 +1831,11 @@ def _handle_manual_add_reservation():
             reservations_rows,
             extra_service_names=[valid_service],
         )
+        service_capacity_cache = build_service_capacity_cache(
+            business_id,
+            reservations_rows,
+            extra_service_names=[valid_service],
+        )
 
         chosen_resource = None
 
@@ -1777,6 +1849,7 @@ def _handle_manual_add_reservation():
                 eligible_resources,
                 reservations_rows,
                 service_duration_cache,
+                service_capacity_cache,
             )
             if error_message:
                 print("manual_add_reservation:", error_message, flush=True)
@@ -2646,12 +2719,15 @@ def validate_service_for_business(business_id, service_name):
 
     return None, services
 def get_service_row_for_business(business_id, service_name):
+    ensure_service_capacity_columns()
+
     conn = get_db_connection()
     c = conn.cursor()
 
     c.execute(
         """
-        SELECT id, name, price, duration_min
+        SELECT id, name, price, duration_min,
+               COALESCE(capacity_units_required, 1) AS capacity_units_required
         FROM services
         WHERE business_id = %s
           AND lower(trim(name)) = lower(trim(%s))
@@ -2664,7 +2740,8 @@ def get_service_row_for_business(business_id, service_name):
     if not row:
         c.execute(
             """
-            SELECT id, name, price, duration_min
+            SELECT id, name, price, duration_min,
+                   COALESCE(capacity_units_required, 1) AS capacity_units_required
             FROM services
             WHERE business_id = %s
               AND lower(name) LIKE lower(%s)
@@ -2814,6 +2891,7 @@ def is_resource_slot_full(business_id, resource_id, date_iso, new_time, new_serv
     Capacity-aware per-resource slot check.
     Staff/courts usually have capacity=1.
     Pools/rooms can have capacity > 1.
+    Services can also consume more than 1 unit (for example, full court = 2).
     """
     resource = get_resource_by_id(resource_id, business_id)
     if not resource:
@@ -2823,6 +2901,7 @@ def is_resource_slot_full(business_id, resource_id, date_iso, new_time, new_serv
 
     new_service_info = get_service_info(business_id, new_service)
     new_duration = int(new_service_info.get("duration", 45))
+    new_units = int(new_service_info.get("capacity_units", 1))
     new_start = time_to_minutes(new_time)
 
     conn = get_db_connection()
@@ -2841,7 +2920,7 @@ def is_resource_slot_full(business_id, resource_id, date_iso, new_time, new_serv
     rows = c.fetchall()
     conn.close()
 
-    overlapping = 0
+    overlapping_units = 0
 
     for row in rows:
         existing_time = normalize_time_str(row["time"])
@@ -2850,12 +2929,13 @@ def is_resource_slot_full(business_id, resource_id, date_iso, new_time, new_serv
 
         existing_service_info = get_service_info(business_id, row["service"])
         existing_duration = int(existing_service_info.get("duration", 45))
+        existing_units = int(existing_service_info.get("capacity_units", 1))
         existing_start = time_to_minutes(existing_time)
 
         if ranges_overlap(new_start, new_duration, existing_start, existing_duration):
-            overlapping += 1
+            overlapping_units += existing_units
 
-    return overlapping >= capacity
+    return (overlapping_units + new_units) > capacity
 
 
 def get_available_resources_for_slot(business_id, date_iso, time_, service_name):
@@ -3456,6 +3536,18 @@ def process_incoming_message(business, phone, text):
     if state and state.get("step") == "awaiting_date":
         lang = state.get("lang", lang)
 
+        corrected_service, _ = validate_service_for_business(business["id"], t)
+        if corrected_service and corrected_service != state.get("service"):
+            state["service"] = corrected_service
+            send_friendly_message(
+                phone,
+                business,
+                lang,
+                tr(lang, "ask_date", service=corrected_service),
+                purpose="ask_date",
+            )
+            return "ok", 200
+
         if is_booking_intent(t) or is_cancel_intent(t):
             send_friendly_message(
                 phone,
@@ -3490,6 +3582,19 @@ def process_incoming_message(business, phone, text):
     # STEP 4 – TIME
     if state and state.get("step") == "awaiting_time":
         lang = state.get("lang", lang)
+
+        corrected_service, _ = validate_service_for_business(business["id"], t)
+        if corrected_service and corrected_service != state.get("service"):
+            state["service"] = corrected_service
+            state["step"] = "awaiting_date"
+            send_friendly_message(
+                phone,
+                business,
+                lang,
+                tr(lang, "ask_date", service=corrected_service),
+                purpose="ask_date",
+            )
+            return "ok", 200
 
         if is_booking_intent(t) or is_cancel_intent(t):
             send_friendly_message(phone, business, lang, tr(lang, "ask_time"), purpose="ask_time")
@@ -3771,7 +3876,8 @@ def get_services_for_business(business_id):
     c = conn.cursor()
     c.execute(
         """
-        SELECT id, name, price, duration_min
+        SELECT id, name, price, duration_min,
+               COALESCE(capacity_units_required, 1) AS capacity_units_required
         FROM services
         WHERE business_id = %s
         ORDER BY id DESC
@@ -4147,17 +4253,18 @@ def admin_services(business_id):
         if name:
             c.execute(
                 """
-                INSERT INTO services (name, price, duration_min, business_id)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO services (name, price, duration_min, business_id, capacity_units_required)
+                VALUES (%s, %s, %s, %s, %s)
                 """,
-                (name, price_f, dur_i, business_id),
+                (name, price_f, dur_i, business_id, 1),
             )
             conn.commit()
 
     # List services for this business
     c.execute(
         """
-        SELECT id, name, price, duration_min
+        SELECT id, name, price, duration_min,
+               COALESCE(capacity_units_required, 1) AS capacity_units_required
         FROM services
         WHERE business_id=%s
         ORDER BY id
@@ -4372,6 +4479,7 @@ def dashboard():
     ensure_fb_tables()
     ensure_business_feature_columns()
     ensure_reservation_extension_columns()
+    ensure_service_capacity_columns()
     ensure_resource_availability_tables()
 
     requested_business_id = request.args.get("business_id", type=int)
@@ -4419,7 +4527,8 @@ def dashboard():
     # Load services once
     c.execute(
         """
-        SELECT id, name, price, duration_min
+        SELECT id, name, price, duration_min,
+               COALESCE(capacity_units_required, 1) AS capacity_units_required
         FROM services
         WHERE business_id = %s
         ORDER BY id DESC
@@ -4433,6 +4542,7 @@ def dashboard():
         service_meta[(s["name"] or "").strip().lower()] = {
             "price": float(s.get("price") or 0),
             "duration": int(s.get("duration_min") or 45),
+            "capacity_units": int(s.get("capacity_units_required") or 1),
         }
 
     def get_service_meta(service_name):
@@ -4975,20 +5085,23 @@ def add_service():
     if "business_id" not in session:
         return redirect("/login")
 
+    ensure_service_capacity_columns()
+
     business_id = session["business_id"]
     name = request.form.get("name", "").strip()
     price = float(request.form.get("price") or 0)
     duration_min = int(request.form.get("duration_min") or 45)
+    capacity_units_required = normalize_capacity(request.form.get("capacity_units_required"), default=1)
 
     if name:
         conn = get_db_connection()
         c = conn.cursor()
         c.execute(
             """
-            INSERT INTO services (name, price, duration_min, business_id)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO services (name, price, duration_min, business_id, capacity_units_required)
+            VALUES (%s, %s, %s, %s, %s)
             """,
-            (name, price, duration_min, business_id),
+            (name, price, duration_min, business_id, capacity_units_required),
         )
         conn.commit()
         conn.close()
@@ -5603,15 +5716,17 @@ def is_reservation_extension_possible(business, reservation, increment_minutes=3
     extra_minutes = int(reservation.get("extra_minutes") or 0)
     current_total_duration = base_duration + extra_minutes
     proposed_total_duration = current_total_duration + increment_minutes
+    reservation_units = get_service_capacity_units(business_id, service_name)
 
     start_minutes = time_to_minutes(start_time)
-    current_end_minutes = start_minutes + current_total_duration
     proposed_end_minutes = start_minutes + proposed_total_duration
 
     if resource_id:
         rules = get_resource_day_rules(business_id, resource_id, date_iso)
+        capacity = int((get_resource_by_id(resource_id, business_id) or {}).get("capacity") or 1)
     else:
         rules = get_day_rules(business_id, date_iso)
+        capacity = 1
 
     if rules.get("closed"):
         return False, "Resource is unavailable on that date."
@@ -5626,6 +5741,7 @@ def is_reservation_extension_possible(business, reservation, increment_minutes=3
         excluded_reservation_id=reservation["id"],
     )
 
+    overlapping_units = 0
     for row in reservations_rows:
         if resource_id and row.get("resource_id") != resource_id:
             continue
@@ -5640,9 +5756,12 @@ def is_reservation_extension_possible(business, reservation, increment_minutes=3
             row["service"],
             extra_minutes=row.get("extra_minutes") or 0,
         )
+        existing_units = get_service_capacity_units(business_id, row["service"])
 
         if ranges_overlap(start_minutes, proposed_total_duration, existing_start, existing_duration):
-            return False, "The next 30 minutes are already booked."
+            overlapping_units += existing_units
+            if overlapping_units + reservation_units > capacity:
+                return False, "The next 30 minutes are already booked."
 
     return True, None
 

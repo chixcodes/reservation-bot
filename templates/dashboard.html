@@ -36,9 +36,11 @@
                 <button type="button" onclick="switchTab('settings')" data-tab="settings" class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
                     Settings
                 </button>
+                {% if feature_fb %}
                 <button type="button" onclick="switchTab('fb')" data-tab="fb" class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
                     F&B
                 </button>
+                {% endif %}
                 <button type="button" onclick="switchTab('reports')" data-tab="reports" class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
                     Reports
                 </button>
@@ -82,9 +84,11 @@
                 <button type="button" onclick="switchTab('settings')" data-tab="settings" class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
                     Settings
                 </button>
+                {% if feature_fb %}
                 <button type="button" onclick="switchTab('fb')" data-tab="fb" class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
                     F&B
                 </button>
+                {% endif %}
                 <button type="button" onclick="switchTab('reports')" data-tab="reports" class="nav-btn w-full text-left px-4 py-3 rounded-xl text-slate-300 hover:bg-slate-800">
                     Reports
                 </button>
@@ -358,10 +362,20 @@
                                     <tr class="hover:bg-slate-50">
                                         <td class="px-5 py-4 font-medium">{{ r.customer_name }}</td>
                                         <td class="px-5 py-4 text-slate-600">{{ r.customer_phone }}</td>
-                                        <td class="px-5 py-4">{{ r.service }}</td>
+                                        <td class="px-5 py-4">
+                                            <div class="font-medium">{{ r.service }}</div>
+                                            {% if r.extra_price and r.extra_price > 0 %}
+                                            <div class="text-xs text-emerald-600 mt-1">+${{ "%.2f"|format(r.extra_price) }} extension</div>
+                                            {% endif %}
+                                        </td>
                                         <td class="px-5 py-4">{{ r.resource_name_snapshot or "-" }}</td>
                                         <td class="px-5 py-4">{{ r.date }}</td>
-                                        <td class="px-5 py-4">{{ r.time }}</td>
+                                        <td class="px-5 py-4">
+                                            <div class="font-medium">{{ r.time }}</div>
+                                            {% if r.extra_minutes and r.extra_minutes > 0 %}
+                                            <div class="text-xs text-indigo-600 mt-1">+{{ r.extra_minutes }} min</div>
+                                            {% endif %}
+                                        </td>
 
                                         <td class="px-5 py-4">
                                             <form method="post" action="/reservations/update-note/{{ r.id }}" class="flex gap-2">
@@ -392,7 +406,7 @@
                                         </td>
 
                                         <td class="px-5 py-4 text-right">
-                                            <div class="flex items-center justify-end gap-2">
+                                            <div class="flex items-center justify-end gap-2 flex-wrap">
                                                 {% if r.status != "CANCELED" %}
                                                 <button type="button"
                                                     onclick="openRescheduleModal(this)"
@@ -403,6 +417,22 @@
                                                     class="inline-flex px-3 py-2 rounded-lg bg-indigo-50 text-indigo-700 hover:bg-indigo-100 text-sm font-medium">
                                                     Reschedule
                                                 </button>
+                                                {% endif %}
+                                                {% if feature_time_extension and r.can_add_30 %}
+                                                <form method="post" action="/reservations/add-30/{{ r.id }}">
+                                                    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                                                    <button type="submit" class="inline-flex px-3 py-2 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100 text-sm font-medium">
+                                                        +30 min
+                                                    </button>
+                                                </form>
+                                                {% endif %}
+                                                {% if r.can_mark_done %}
+                                                <form method="post" action="/reservations/mark-done/{{ r.id }}">
+                                                    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                                                    <button type="submit" class="inline-flex px-3 py-2 rounded-lg bg-violet-50 text-violet-700 hover:bg-violet-100 text-sm font-medium">
+                                                        Mark Done
+                                                    </button>
+                                                </form>
                                                 {% endif %}
                                                 {% if r.status == "CONFIRMED" %}
                                                 <a href="/cancel/{{ r.id }}?business_id={{ business.id }}"
@@ -651,6 +681,38 @@
                                                 </button>
                                             </form>
 
+                                            {% if feature_resource_blocking %}
+                                            <div class="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                                                <h4 class="font-medium mb-3">Block Resource</h4>
+                                                <form method="post" action="/resources/block/{{ r.id }}" class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                                    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                                                    <input type="date" name="blocked_date" required class="rounded-xl border border-slate-300 px-3 py-2">
+                                                    <input type="text" name="note" placeholder="Reason (optional)" class="rounded-xl border border-slate-300 px-3 py-2">
+                                                    <button type="submit" class="rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-semibold px-4 py-2">
+                                                        Block Date
+                                                    </button>
+                                                </form>
+
+                                                {% set blocked_rows = resource_blocked_map.get(r.id, []) %}
+                                                {% if blocked_rows %}
+                                                <div class="mt-4 space-y-2">
+                                                    {% for b in blocked_rows %}
+                                                    <div class="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-2">
+                                                        <div>
+                                                            <p class="text-sm font-medium text-slate-800">{{ b.blocked_date }}</p>
+                                                            {% if b.note %}<p class="text-xs text-slate-500">{{ b.note }}</p>{% endif %}
+                                                        </div>
+                                                        <form method="post" action="/resources/unblock/{{ b.id }}">
+                                                            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                                                            <button type="submit" class="text-sm text-red-600 hover:text-red-700 font-medium">Remove</button>
+                                                        </form>
+                                                    </div>
+                                                    {% endfor %}
+                                                </div>
+                                                {% endif %}
+                                            </div>
+                                            {% endif %}
+
                                             <div class="flex flex-wrap gap-3 mt-4">
                                                 <form method="post" action="/resources/toggle/{{ r.id }}">
                                                     <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
@@ -728,6 +790,53 @@
                                 <div>
                                     <label class="block text-sm font-medium mb-2">Business Description</label>
                                     <textarea name="business_description" rows="4" class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">{{ business.business_description or '' }}</textarea>
+                                </div>
+
+                                <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4 space-y-4">
+                                    <div>
+                                        <p class="font-semibold">Optional Modules</p>
+                                        <p class="text-sm text-slate-500 mt-1">Turn on only the features this business actually needs.</p>
+                                    </div>
+
+                                    <label class="flex items-center justify-between gap-3 rounded-xl bg-white border border-slate-200 px-4 py-3">
+                                        <div>
+                                            <p class="font-medium">F&amp;B</p>
+                                            <p class="text-sm text-slate-500">Show the F&amp;B tab and include snack/drink sales in reports.</p>
+                                        </div>
+                                        <input type="checkbox" name="enable_fb" {% if feature_fb %}checked{% endif %}>
+                                    </label>
+
+                                    <label class="flex items-center justify-between gap-3 rounded-xl bg-white border border-slate-200 px-4 py-3">
+                                        <div>
+                                            <p class="font-medium">Resource Blocking</p>
+                                            <p class="text-sm text-slate-500">Use resource-level blocking for courts, rooms, pools, or other assets.</p>
+                                        </div>
+                                        <input type="checkbox" name="enable_resource_blocking" {% if feature_resource_blocking %}checked{% endif %}>
+                                    </label>
+
+                                    <label class="flex items-center justify-between gap-3 rounded-xl bg-white border border-slate-200 px-4 py-3">
+                                        <div>
+                                            <p class="font-medium">Time Extension</p>
+                                            <p class="text-sm text-slate-500">Allow +30 minute extensions on existing reservations.</p>
+                                        </div>
+                                        <input type="checkbox" name="enable_time_extension" {% if feature_time_extension %}checked{% endif %}>
+                                    </label>
+
+                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <div>
+                                            <label class="block text-sm font-medium mb-2">Extension Pricing Mode</label>
+                                            <select name="extension_pricing_mode" class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                                <option value="tier_diff" {% if business.extension_pricing_mode =="tier_diff" %}selected{% endif %}>Use next duration price difference</option>
+                                                <option value="flat_30" {% if business.extension_pricing_mode =="flat_30" %}selected{% endif %}>Use flat 30-minute price</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label class="block text-sm font-medium mb-2">Flat 30-Min Price</label>
+                                            <input name="extension_flat_30_price" type="number" step="0.01" min="0" value="{{ '%.2f'|format(business.extension_flat_30_price or 0) }}" class="w-full rounded-xl border border-slate-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                        </div>
+                                    </div>
+
+                                    <p class="text-xs text-slate-500">Tip: keep this off for barbers and clinics unless they really need it.</p>
                                 </div>
 
                                 <button type="submit" class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-5 rounded-xl">
@@ -827,6 +936,7 @@
 
                     </div>
                 </div>
+                {% if feature_fb %}
 
 
                 <!-- F&B TAB -->
@@ -841,10 +951,12 @@
                             <p class="text-sm text-slate-500">Active Products</p>
                             <p class="text-3xl font-bold mt-2">{{ fb_products | selectattr("is_active") | list | length }}</p>
                         </div>
+                        {% if feature_fb %}
                         <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
                             <p class="text-sm text-slate-500">Weekly F&B Revenue</p>
                             <p class="text-3xl font-bold mt-2">${{ "%.2f"|format(report_metrics.weekly_fb_revenue) }}</p>
                         </div>
+                        {% endif %}
                         <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
                             <p class="text-sm text-slate-500">Total F&B Revenue</p>
                             <p class="text-3xl font-bold mt-2">${{ "%.2f"|format(report_metrics.fb_total_revenue) }}</p>
@@ -873,7 +985,7 @@
                         <div class="xl:col-span-2 bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
                             <div class="flex items-center justify-between gap-3 mb-4">
                                 <h3 class="text-lg font-semibold">Close F&B Sale</h3>
-                                <span class="text-sm text-slate-500">Enter quantities and close the sale</span>
+                                <span class="text-sm text-slate-500">Tap + or - to adjust quantities</span>
                             </div>
 
                             <form method="post" action="/fb/sales/close">
@@ -882,15 +994,33 @@
                                     {% for p in fb_products %}
                                     {% if p.is_active %}
                                     <div class="grid grid-cols-12 gap-3 items-center rounded-xl border border-slate-200 p-4">
-                                        <div class="col-span-6">
+                                        <div class="col-span-12 md:col-span-5">
                                             <p class="font-semibold">{{ p.name }}</p>
                                             <p class="text-sm text-slate-500">${{ "%.2f"|format(p.price) }}</p>
                                         </div>
-                                        <div class="col-span-3">
+                                        <div class="col-span-12 md:col-span-4">
                                             <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1">Qty</label>
-                                            <input type="number" name="qty_{{ p.id }}" min="0" value="0" class="w-full rounded-lg border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                            <div class="flex items-center gap-2">
+                                                <button type="button"
+                                                        onclick="changeFbQty('qty_{{ p.id }}', -1)"
+                                                        class="w-10 h-10 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xl font-bold">
+                                                    -
+                                                </button>
+                                                <input type="number"
+                                                       id="qty_{{ p.id }}"
+                                                       name="qty_{{ p.id }}"
+                                                       min="0"
+                                                       value="0"
+                                                       readonly
+                                                       class="w-16 text-center rounded-lg border border-slate-300 px-2 py-2 font-semibold bg-white">
+                                                <button type="button"
+                                                        onclick="changeFbQty('qty_{{ p.id }}', 1)"
+                                                        class="w-10 h-10 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xl font-bold">
+                                                    +
+                                                </button>
+                                            </div>
                                         </div>
-                                        <div class="col-span-3 text-right">
+                                        <div class="col-span-12 md:col-span-3 text-right">
                                             <span class="inline-flex px-3 py-2 rounded-lg bg-slate-100 text-slate-700 text-sm font-medium">Ready</span>
                                         </div>
                                     </div>
@@ -970,6 +1100,9 @@
                     </div>
                 </div>
 
+
+                {% endif %}
+
                 <!-- REPORTS TAB -->
                 <div id="tab-reports" class="tab-content">
                     <div class="mb-6">
@@ -982,10 +1115,12 @@
                             <p class="text-sm text-slate-500">Weekly Reservations Revenue</p>
                             <p class="text-3xl font-bold mt-2">${{ "%.2f"|format(report_metrics.weekly_reservations_revenue) }}</p>
                         </div>
+                        {% if feature_fb %}
                         <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
                             <p class="text-sm text-slate-500">Weekly F&B Revenue</p>
                             <p class="text-3xl font-bold mt-2">${{ "%.2f"|format(report_metrics.weekly_fb_revenue) }}</p>
                         </div>
+                        {% endif %}
                         <div class="bg-indigo-600 text-white rounded-2xl p-5 shadow-sm">
                             <p class="text-sm text-indigo-100">Total Weekly Revenue</p>
                             <p class="text-3xl font-bold mt-2">${{ "%.2f"|format(report_metrics.weekly_total_revenue) }}</p>
@@ -1092,6 +1227,7 @@
                             <p class="text-4xl font-bold mt-2">{{ report_metrics.top_resource }}</p>
                         </div>
                     </div>
+                    {% if feature_fb %}
 
                     <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm mt-6">
                         <div class="flex items-center justify-between gap-3 mb-4">
@@ -1116,6 +1252,7 @@
                             {% endfor %}
                         </div>
                     </div>
+                    {% endif %}
                 </div>
 
             </div>
@@ -1167,6 +1304,15 @@
             window.history.replaceState({}, "", url);
 
             closeMobileSidebar();
+        }
+
+        function changeFbQty(inputId, delta) {
+            const input = document.getElementById(inputId);
+            if (!input) return;
+
+            const current = parseInt(input.value || "0", 10);
+            const next = Math.max(0, current + delta);
+            input.value = next;
         }
 
         function closeToast() {

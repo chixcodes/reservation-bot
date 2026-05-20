@@ -83,23 +83,13 @@ def clear_message_processing(message_id):
 def get_business_by_phone_number_id(phone_number_id: str):
     conn = get_db_connection()
     c = conn.cursor()
-
-    # Try to match by phone_number_id
     c.execute(
         "SELECT * FROM businesses WHERE phone_number_id=%s LIMIT 1",
         (phone_number_id,),
     )
     row = c.fetchone()
-
-    # If nothing found, fallback to first business (for dev)
-    if not row:
-        c.execute("SELECT * FROM businesses LIMIT 1")
-        row = c.fetchone()
-
     conn.close()
-    if row:
-        return dict(row)
-    return None
+    return dict(row) if row else None
 
 
 def get_business_by_id(business_id: int):
@@ -205,6 +195,219 @@ def ensure_fb_tables():
     conn.commit()
     conn.close()
     _fb_tables_ready = True
+
+
+_business_feature_columns_ready = False
+_reservation_extension_columns_ready = False
+
+def ensure_business_feature_columns():
+    global _business_feature_columns_ready
+    if _business_feature_columns_ready:
+        return
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS enable_fb BOOLEAN")
+    c.execute("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS enable_resource_blocking BOOLEAN")
+    c.execute("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS enable_time_extension BOOLEAN")
+    c.execute("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS extension_pricing_mode TEXT")
+    c.execute("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS extension_flat_30_price NUMERIC(10,2)")
+    conn.commit()
+    conn.close()
+
+    _business_feature_columns_ready = True
+
+
+def ensure_reservation_extension_columns():
+    global _reservation_extension_columns_ready
+    if _reservation_extension_columns_ready:
+        return
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("ALTER TABLE reservations ADD COLUMN IF NOT EXISTS extra_minutes INTEGER NOT NULL DEFAULT 0")
+    c.execute("ALTER TABLE reservations ADD COLUMN IF NOT EXISTS extra_price NUMERIC(10,2) NOT NULL DEFAULT 0")
+    conn.commit()
+    conn.close()
+
+    _reservation_extension_columns_ready = True
+
+
+
+_resource_availability_tables_ready = False
+
+def ensure_resource_availability_tables():
+    global _resource_availability_tables_ready
+    if _resource_availability_tables_ready:
+        return
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS resource_hours (
+            id SERIAL PRIMARY KEY,
+            business_id INTEGER NOT NULL,
+            resource_id INTEGER NOT NULL,
+            weekday INTEGER NOT NULL,
+            is_closed BOOLEAN NOT NULL DEFAULT FALSE,
+            open_time TIME,
+            close_time TIME
+        )
+        """
+    )
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS resource_blocked_dates (
+            id SERIAL PRIMARY KEY,
+            business_id INTEGER NOT NULL,
+            resource_id INTEGER NOT NULL,
+            blocked_date DATE NOT NULL,
+            note TEXT
+        )
+        """
+    )
+    c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_hours_unique ON resource_hours (business_id, resource_id, weekday)")
+    c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_blocked_unique ON resource_blocked_dates (business_id, resource_id, blocked_date)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_resource_blocked_lookup ON resource_blocked_dates (business_id, resource_id, blocked_date)")
+    conn.commit()
+    conn.close()
+
+    _resource_availability_tables_ready = True
+
+def infer_business_feature_defaults(business_id):
+    ensure_fb_tables()
+
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    c.execute(
+        """
+        SELECT DISTINCT lower(coalesce(resource_type, '')) AS resource_type
+        FROM resources
+        WHERE business_id = %s
+        """,
+        (business_id,),
+    )
+    resource_types = {row["resource_type"] for row in c.fetchall() if row.get("resource_type")}
+    has_court_like_resources = bool(resource_types.intersection({"court", "room", "pool"}))
+
+    c.execute("SELECT 1 FROM fb_products WHERE business_id = %s LIMIT 1", (business_id,))
+    has_fb_products = bool(c.fetchone())
+
+    c.execute("SELECT 1 FROM fb_sales WHERE business_id = %s LIMIT 1", (business_id,))
+    has_fb_sales = bool(c.fetchone())
+
+    conn.close()
+
+    return {
+        "enable_fb": has_fb_products or has_fb_sales,
+        "enable_resource_blocking": has_court_like_resources,
+        "enable_time_extension": has_court_like_resources,
+    }
+
+
+def get_business_feature_flags(business):
+    ensure_business_feature_columns()
+    ensure_fb_tables()
+    business_id = business["id"]
+
+    inferred = infer_business_feature_defaults(business_id)
+
+    def resolve_boolean(field_name):
+        value = business.get(field_name)
+        if value is None:
+            return inferred[field_name]
+        return bool(value)
+
+    pricing_mode = (business.get("extension_pricing_mode") or "").strip().lower() or "tier_diff"
+    flat_30_price = safe_float(business.get("extension_flat_30_price") or 0, 0.0)
+
+    return {
+        "enable_fb": resolve_boolean("enable_fb"),
+        "enable_resource_blocking": resolve_boolean("enable_resource_blocking"),
+        "enable_time_extension": resolve_boolean("enable_time_extension"),
+        "extension_pricing_mode": pricing_mode,
+        "extension_flat_30_price": flat_30_price,
+    }
+
+
+def business_has_feature(business, feature_name):
+    return bool(get_business_feature_flags(business).get(feature_name))
+
+
+def get_service_price_for_duration(business_id, duration_min):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT price
+        FROM services
+        WHERE business_id = %s
+          AND duration_min = %s
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (business_id, duration_min),
+    )
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return float(row.get("price") or 0)
+
+
+def get_reservation_base_duration_minutes(business_id, service_name):
+    return int(get_service_info(business_id, service_name).get("duration", 45))
+
+
+def get_reservation_total_duration_minutes(business_id, service_name, extra_minutes=0):
+    return get_reservation_base_duration_minutes(business_id, service_name) + int(extra_minutes or 0)
+
+
+def get_reservation_total_price(business_id, service_name, extra_price=0):
+    base_price = float(get_service_info(business_id, service_name).get("price", 0) or 0)
+    return base_price + float(extra_price or 0)
+
+
+def calculate_extension_extra_charge(business, service_name, current_extra_minutes=0, increment_minutes=30):
+    flags = get_business_feature_flags(business)
+    business_id = business["id"]
+
+    base_price = float(get_service_info(business_id, service_name).get("price", 0) or 0)
+    current_extra_minutes = int(current_extra_minutes or 0)
+    current_total_price = get_reservation_total_price(business_id, service_name, 0) + float(0)
+    current_total_price = base_price + 0  # explicit for readability
+
+    # What is already being charged for the current reservation state?
+    current_reservation_price = base_price
+    if current_extra_minutes:
+        current_duration = get_reservation_base_duration_minutes(business_id, service_name) + current_extra_minutes
+        current_duration_price = get_service_price_for_duration(business_id, current_duration)
+        if current_duration_price is not None:
+            current_reservation_price = current_duration_price
+        else:
+            current_reservation_price = base_price + (safe_float(flags.get("extension_flat_30_price") or 0) * (current_extra_minutes // 30))
+    else:
+        current_duration = get_reservation_base_duration_minutes(business_id, service_name)
+
+    new_duration = current_duration + int(increment_minutes or 0)
+    new_duration_price = get_service_price_for_duration(business_id, new_duration)
+
+    if flags.get("extension_pricing_mode") == "flat_30":
+        flat = safe_float(flags.get("extension_flat_30_price") or 0, 0.0)
+        if flat > 0:
+            return flat
+
+    if new_duration_price is not None:
+        extra = round(new_duration_price - current_reservation_price, 2)
+        return max(0.0, extra)
+
+    flat = safe_float(flags.get("extension_flat_30_price") or 0, 0.0)
+    if flat > 0:
+        return flat
+
+    return None
 
 
 def safe_float(value, default=0.0):
@@ -1010,10 +1213,11 @@ def add_reservation_to_google_calendar(
     time_,
     resource_name=None,
     resource_id=None,
+    extra_minutes=0,
 ):
     try:
         service_info = get_service_info(business_id, service)
-        duration_min = int(service_info.get("duration", 45))
+        duration_min = int(service_info.get("duration", 45)) + int(extra_minutes or 0)
         business = get_business_by_id(business_id) or {}
         calendar_id = (business.get("calendar_id") or "primary").strip() or "primary"
 
@@ -1150,7 +1354,9 @@ def compute_dashboard_report_metrics(business, services, reservations_rows):
         for r in rows:
             status = (r.get("status") or "").upper()
             meta = get_meta(r.get("service"))
-            price = float(meta.get("price") or 0)
+            base_price = float(meta.get("price") or 0)
+            extra_price = float(r.get("extra_price") or 0)
+            price = base_price + extra_price
 
             if status in ("CONFIRMED", "DONE"):
                 total_booked_revenue += price
@@ -1473,6 +1679,21 @@ def is_resource_slot_full_from_prefetched(business_id, resource, new_time, new_s
             overlapping += 1
 
     return overlapping >= capacity
+
+def reservation_has_ended(business, reservation):
+    try:
+        end_dt = reservation_end_datetime(
+            business,
+            reservation["date"],
+            reservation["time"],
+            reservation["service"],
+            reservation.get("extra_minutes") or 0,
+        )
+        now_dt = datetime.now(pytz.timezone(business.get("timezone") or "Asia/Beirut"))
+        return end_dt <= now_dt
+    except Exception:
+        return False
+
 
 def dashboard_redirect_with_toast(message=None, toast_type="info", tab="reservations"):
     url = f"/dashboard?tab={tab}"
@@ -2172,7 +2393,7 @@ def is_past_reservation_datetime(business, date_iso, time_str):
     return target_dt < now_dt
 
 
-def reservation_end_datetime(business, date_str, time_str, service_name):
+def reservation_end_datetime(business, date_str, time_str, service_name, extra_minutes=0):
     tz = pytz.timezone(business.get("timezone") or "Asia/Beirut")
 
     normalized_time = normalize_time_str(time_str)
@@ -2182,8 +2403,11 @@ def reservation_end_datetime(business, date_str, time_str, service_name):
     start_naive = datetime.strptime(f"{date_str} {normalized_time}", "%Y-%m-%d %H:%M")
     start_dt = tz.localize(start_naive)
 
-    service_info = get_service_info(business["id"], service_name)
-    duration_min = int(service_info.get("duration", 45))
+    duration_min = get_reservation_total_duration_minutes(
+        business["id"],
+        service_name,
+        extra_minutes=extra_minutes,
+    )
 
     return start_dt + timedelta(minutes=duration_min)
 
@@ -2194,7 +2418,7 @@ def mark_past_reservations_done(business):
 
     c.execute(
         """
-        SELECT id, date, time, service
+        SELECT id, date, time, service, COALESCE(extra_minutes, 0) AS extra_minutes
         FROM reservations
         WHERE business_id = %s
           AND status = 'CONFIRMED'
@@ -2213,6 +2437,7 @@ def mark_past_reservations_done(business):
                 row["date"],
                 row["time"],
                 row["service"],
+                row.get("extra_minutes") or 0,
             )
             if end_dt <= now:
                 ids_to_mark_done.append(row["id"])
@@ -4145,6 +4370,9 @@ def dashboard():
         return redirect("/login")
 
     ensure_fb_tables()
+    ensure_business_feature_columns()
+    ensure_reservation_extension_columns()
+    ensure_resource_availability_tables()
 
     requested_business_id = request.args.get("business_id", type=int)
 
@@ -4163,6 +4391,13 @@ def dashboard():
         return f"No business with ID {business_id}", 404
 
     session["business_id"] = business_id
+
+    feature_flags = get_business_feature_flags(business)
+    business["enable_fb"] = feature_flags["enable_fb"]
+    business["enable_resource_blocking"] = feature_flags["enable_resource_blocking"]
+    business["enable_time_extension"] = feature_flags["enable_time_extension"]
+    business["extension_pricing_mode"] = feature_flags["extension_pricing_mode"]
+    business["extension_flat_30_price"] = feature_flags["extension_flat_30_price"]
 
     ensure_default_hours(business_id)
 
@@ -4251,7 +4486,11 @@ def dashboard():
     # Load only recent/future reservations
     c.execute(
         """
-        SELECT id, customer_name, customer_phone, service, date, time, status, notes, resource_id, resource_name_snapshot
+        SELECT id, customer_name, customer_phone, service, date, time, status, notes, resource_id, resource_name_snapshot,
+               COALESCE(extra_minutes, 0) AS extra_minutes,
+               COALESCE(extra_price, 0) AS extra_price,
+               COALESCE(extra_minutes, 0) AS extra_minutes,
+               COALESCE(extra_price, 0) AS extra_price
         FROM reservations
         WHERE business_id = %s
           AND date >= %s
@@ -4287,7 +4526,20 @@ def dashboard():
 
     c.execute(
         """
-        SELECT id, customer_name, customer_phone, service, date, time, status, notes, resource_id, resource_name_snapshot
+        SELECT id, resource_id, blocked_date::text AS blocked_date, COALESCE(note, '') AS note
+        FROM resource_blocked_dates
+        WHERE business_id = %s
+        ORDER BY blocked_date DESC, id DESC
+        """,
+        (business_id,),
+    )
+    resource_blocked_rows = c.fetchall()
+
+    c.execute(
+        """
+        SELECT id, customer_name, customer_phone, service, date, time, status, notes, resource_id, resource_name_snapshot,
+               COALESCE(extra_minutes, 0) AS extra_minutes,
+               COALESCE(extra_price, 0) AS extra_price
         FROM reservations
         WHERE business_id = %s
         ORDER BY date DESC, time DESC, id DESC
@@ -4320,7 +4572,7 @@ def dashboard():
             )
             start_dt = tz.localize(start_naive)
 
-            duration_min = get_service_meta(r["service"])["duration"]
+            duration_min = get_service_meta(r["service"])["duration"] + int(r.get("extra_minutes") or 0)
             end_dt = start_dt + timedelta(minutes=duration_min)
 
             if end_dt >= cutoff_dt:
@@ -4375,7 +4627,7 @@ def dashboard():
         if r["date"] != today_iso:
             continue
 
-        price = get_service_meta(r["service"])["price"]
+        price = get_service_meta(r["service"])["price"] + float(r.get("extra_price") or 0)
 
         if r["status"] == "CONFIRMED":
             dashboard_metrics["today_booked_revenue"] += price
@@ -4389,6 +4641,25 @@ def dashboard():
         ],
         key=reservation_sort_key
     )
+
+    resource_blocked_map = {}
+    for row in resource_blocked_rows:
+        resource_blocked_map.setdefault(row["resource_id"], []).append(row)
+
+    same_day_confirmed_map = {}
+    for row in all_reservations:
+        if (row.get("status") or "").upper() != "CONFIRMED":
+            continue
+        same_day_confirmed_map.setdefault(row["date"], []).append(row)
+
+    for r in filtered_reservations:
+        r["extra_minutes"] = int(r.get("extra_minutes") or 0)
+        r["extra_price"] = float(r.get("extra_price") or 0)
+        r["can_mark_done"] = reservation_has_ended(business, r) and (r.get("status") or "").upper() == "CONFIRMED"
+        if feature_flags.get("enable_time_extension") and (r.get("status") or "").upper() == "CONFIRMED":
+            r["can_add_30"] = is_reservation_extension_possible(business, r, increment_minutes=30)[0]
+        else:
+            r["can_add_30"] = False
 
     report_metrics = compute_dashboard_report_metrics(business, services, all_reservations)
     fb_report_metrics = compute_fb_report_metrics(business)
@@ -4407,6 +4678,7 @@ def dashboard():
         service_options=services,
         resources=resources,
         resource_services_map=resource_services_map,
+        resource_blocked_map=resource_blocked_map,
         hours=hours,
         blocked_dates=blocked_dates,
         fb_products=fb_products,
@@ -4423,6 +4695,10 @@ def dashboard():
         toast=toast,
         toast_type=toast_type,
         report_metrics=report_metrics,
+        feature_flags=feature_flags,
+        feature_fb=feature_flags["enable_fb"],
+        feature_resource_blocking=feature_flags["enable_resource_blocking"],
+        feature_time_extension=feature_flags["enable_time_extension"],
     )
 
 @app.route("/cancel/<int:reservation_id>")
@@ -4492,6 +4768,133 @@ def cancel_reservation(reservation_id):
     return redirect("/dashboard")
 
 
+@app.route("/resources/block/<int:resource_id>", methods=["POST"])
+def block_resource_date(resource_id):
+    if "business_id" not in session:
+        return redirect("/login")
+
+    business_id = session["business_id"]
+    business = get_business_by_id(business_id)
+    if not business:
+        return dashboard_redirect_with_toast("Business not found.", "error", tab="resources")
+
+    ensure_business_feature_columns()
+    ensure_resource_availability_tables()
+    if not get_business_feature_flags(business).get("enable_resource_blocking"):
+        return dashboard_redirect_with_toast("Resource blocking is disabled for this business.", "error", tab="resources")
+
+    blocked_date_raw = (request.form.get("blocked_date") or "").strip()
+    note = (request.form.get("note") or "").strip()
+    if not blocked_date_raw:
+        return dashboard_redirect_with_toast("Please choose a date to block.", "error", tab="resources")
+
+    blocked_date = normalize_booking_date(blocked_date_raw)
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT id FROM resource_blocked_dates
+        WHERE business_id = %s AND resource_id = %s AND blocked_date = %s
+        LIMIT 1
+        """,
+        (business_id, resource_id, blocked_date),
+    )
+    existing = c.fetchone()
+    if existing:
+        c.execute(
+            """
+            UPDATE resource_blocked_dates
+            SET note = %s
+            WHERE id = %s AND business_id = %s
+            """,
+            (note, existing["id"], business_id),
+        )
+    else:
+        c.execute(
+            """
+            INSERT INTO resource_blocked_dates (business_id, resource_id, blocked_date, note)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (business_id, resource_id, blocked_date, note),
+        )
+    conn.commit()
+    conn.close()
+
+    return dashboard_redirect_with_toast("Resource blocked successfully.", "success", tab="resources")
+
+
+@app.route("/resources/unblock/<int:block_id>", methods=["POST"])
+def unblock_resource_date(block_id):
+    if "business_id" not in session:
+        return redirect("/login")
+
+    business_id = session["business_id"]
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        DELETE FROM resource_blocked_dates
+        WHERE id = %s AND business_id = %s
+        """,
+        (block_id, business_id),
+    )
+    conn.commit()
+    conn.close()
+
+    return dashboard_redirect_with_toast("Blocked date removed.", "success", tab="resources")
+
+
+@app.route("/reservations/mark-done/<int:reservation_id>", methods=["POST"])
+def mark_reservation_done(reservation_id):
+    if "business_id" not in session:
+        return redirect("/login")
+
+    business_id = session["business_id"]
+    business = get_business_by_id(business_id)
+    if not business:
+        return dashboard_redirect_with_toast("Business not found.", "error", "reservations")
+
+    ensure_reservation_extension_columns()
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT id, date, time, service, status, COALESCE(extra_minutes, 0) AS extra_minutes
+        FROM reservations
+        WHERE id = %s AND business_id = %s
+        LIMIT 1
+        """,
+        (reservation_id, business_id),
+    )
+    reservation = c.fetchone()
+    if not reservation:
+        conn.close()
+        return dashboard_redirect_with_toast("Reservation not found.", "error", "reservations")
+
+    if (reservation.get("status") or "").upper() != "CONFIRMED":
+        conn.close()
+        return dashboard_redirect_with_toast("Only confirmed reservations can be marked done.", "error", "reservations")
+
+    if not reservation_has_ended(business, reservation):
+        conn.close()
+        return dashboard_redirect_with_toast("This reservation has not ended yet.", "error", "reservations")
+
+    c.execute(
+        """
+        UPDATE reservations
+        SET status = 'DONE'
+        WHERE id = %s AND business_id = %s
+        """,
+        (reservation_id, business_id),
+    )
+    conn.commit()
+    conn.close()
+
+    return dashboard_redirect_with_toast("Reservation marked as done.", "success", "reservations")
+
+
 @app.route("/settings/update", methods=["POST"])
 def update_business_settings():
     if "business_id" not in session:
@@ -4506,28 +4909,60 @@ def update_business_settings():
     custom_welcome_message = request.form.get("custom_welcome_message", "").strip()
     business_description = request.form.get("business_description", "").strip()
 
+    ensure_business_feature_columns()
+    submitted_feature_fields = {
+        "enable_fb",
+        "enable_resource_blocking",
+        "enable_time_extension",
+        "extension_pricing_mode",
+        "extension_flat_30_price",
+    }
+
     conn = get_db_connection()
     c = conn.cursor()
+
+    updates = [
+        "name = %s",
+        "timezone = %s",
+        "preferred_language = %s",
+        "assistant_tone = %s",
+        "custom_welcome_message = %s",
+        "business_description = %s",
+    ]
+    params = [
+        business_name,
+        timezone,
+        preferred_language,
+        assistant_tone,
+        custom_welcome_message,
+        business_description,
+    ]
+
+    if submitted_feature_fields.intersection(set(request.form.keys())):
+        updates.extend([
+            "enable_fb = %s",
+            "enable_resource_blocking = %s",
+            "enable_time_extension = %s",
+            "extension_pricing_mode = %s",
+            "extension_flat_30_price = %s",
+        ])
+        params.extend([
+            True if request.form.get("enable_fb") == "on" else False,
+            True if request.form.get("enable_resource_blocking") == "on" else False,
+            True if request.form.get("enable_time_extension") == "on" else False,
+            (request.form.get("extension_pricing_mode") or "tier_diff").strip().lower() or "tier_diff",
+            safe_float(request.form.get("extension_flat_30_price") or 0, 0.0),
+        ])
+
+    params.append(business_id)
+
     c.execute(
-        """
+        f"""
         UPDATE businesses
-        SET name = %s,
-            timezone = %s,
-            preferred_language = %s,
-            assistant_tone = %s,
-            custom_welcome_message = %s,
-            business_description = %s
+        SET {", ".join(updates)}
         WHERE id = %s
         """,
-        (
-            business_name,
-            timezone,
-            preferred_language,
-            assistant_tone,
-            custom_welcome_message,
-            business_description,
-            business_id,
-        ),
+        tuple(params),
     )
     conn.commit()
     conn.close()
@@ -5156,11 +5591,177 @@ def close_fb_sale():
     )
 
 
+def is_reservation_extension_possible(business, reservation, increment_minutes=30):
+    business_id = business["id"]
+    date_iso = reservation["date"]
+    start_time = normalize_time_str(reservation["time"]) or reservation["time"]
+    resource_id = reservation.get("resource_id")
+    service_name = reservation["service"]
+    increment_minutes = int(increment_minutes or 0)
+
+    base_duration = get_reservation_base_duration_minutes(business_id, service_name)
+    extra_minutes = int(reservation.get("extra_minutes") or 0)
+    current_total_duration = base_duration + extra_minutes
+    proposed_total_duration = current_total_duration + increment_minutes
+
+    start_minutes = time_to_minutes(start_time)
+    current_end_minutes = start_minutes + current_total_duration
+    proposed_end_minutes = start_minutes + proposed_total_duration
+
+    if resource_id:
+        rules = get_resource_day_rules(business_id, resource_id, date_iso)
+    else:
+        rules = get_day_rules(business_id, date_iso)
+
+    if rules.get("closed"):
+        return False, "Resource is unavailable on that date."
+
+    close_minutes = time_to_minutes(rules["close_time"])
+    if proposed_end_minutes > close_minutes:
+        return False, "The next 30 minutes are outside working hours."
+
+    reservations_rows = get_confirmed_reservations_for_date_excluding_fast(
+        business_id,
+        date_iso,
+        excluded_reservation_id=reservation["id"],
+    )
+
+    for row in reservations_rows:
+        if resource_id and row.get("resource_id") != resource_id:
+            continue
+
+        existing_time = normalize_time_str(row["time"])
+        if not existing_time:
+            continue
+
+        existing_start = time_to_minutes(existing_time)
+        existing_duration = get_reservation_total_duration_minutes(
+            business_id,
+            row["service"],
+            extra_minutes=row.get("extra_minutes") or 0,
+        )
+
+        if ranges_overlap(start_minutes, proposed_total_duration, existing_start, existing_duration):
+            return False, "The next 30 minutes are already booked."
+
+    return True, None
+
+
+@app.route("/reservations/add-30/<int:reservation_id>", methods=["POST"])
+def add_30_minutes_to_reservation(reservation_id):
+    if "business_id" not in session:
+        return redirect("/login")
+
+    ensure_business_feature_columns()
+    ensure_reservation_extension_columns()
+
+    business_id = session["business_id"]
+    business = get_business_by_id(business_id)
+    if not business:
+        return dashboard_redirect_with_toast("Business not found.", "error", "reservations")
+
+    feature_flags = get_business_feature_flags(business)
+    if not feature_flags.get("enable_time_extension"):
+        return dashboard_redirect_with_toast("Time extension is disabled for this business.", "error", "reservations")
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT id, customer_name, customer_phone, service, date, time, status,
+               resource_id, resource_name_snapshot, google_event_id,
+               COALESCE(extra_minutes, 0) AS extra_minutes,
+               COALESCE(extra_price, 0) AS extra_price
+        FROM reservations
+        WHERE id = %s AND business_id = %s
+        LIMIT 1
+        """,
+        (reservation_id, business_id),
+    )
+    reservation = c.fetchone()
+    conn.close()
+
+    if not reservation:
+        return dashboard_redirect_with_toast("Reservation not found.", "error", "reservations")
+
+    if (reservation.get("status") or "").upper() != "CONFIRMED":
+        return dashboard_redirect_with_toast("Only confirmed reservations can be extended.", "error", "reservations")
+
+    can_extend, error_message = is_reservation_extension_possible(business, reservation, increment_minutes=30)
+    if not can_extend:
+        return dashboard_redirect_with_toast(error_message or "The next 30 minutes are not available.", "error", "reservations")
+
+    extra_charge = calculate_extension_extra_charge(
+        business,
+        reservation["service"],
+        current_extra_minutes=reservation.get("extra_minutes") or 0,
+        increment_minutes=30,
+    )
+    if extra_charge is None:
+        return dashboard_redirect_with_toast(
+            "No pricing rule was found for the extra 30 minutes. Add a longer duration service or set a flat 30-minute price.",
+            "error",
+            "reservations",
+        )
+
+    new_extra_minutes = int(reservation.get("extra_minutes") or 0) + 30
+    new_extra_price = round(float(reservation.get("extra_price") or 0) + float(extra_charge), 2)
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        UPDATE reservations
+        SET extra_minutes = %s,
+            extra_price = %s
+        WHERE id = %s AND business_id = %s
+        """,
+        (new_extra_minutes, new_extra_price, reservation_id, business_id),
+    )
+    conn.commit()
+    conn.close()
+
+    old_event_id = reservation.get("google_event_id")
+    if old_event_id:
+        try:
+            delete_event(old_event_id, calendar_id=(business.get("calendar_id") or "primary"))
+        except Exception as e:
+            print("add_30_minutes_to_reservation delete_event warning:", e, flush=True)
+
+    new_event = add_reservation_to_google_calendar(
+        business_id,
+        reservation["customer_name"],
+        reservation["service"],
+        reservation["date"],
+        reservation["time"],
+        resource_name=reservation.get("resource_name_snapshot"),
+        resource_id=reservation.get("resource_id"),
+        extra_minutes=new_extra_minutes,
+    )
+    if new_event and new_event.get("id"):
+        save_google_event_id(reservation_id, new_event["id"])
+
+    total_price = get_reservation_total_price(
+        business_id,
+        reservation["service"],
+        extra_price=new_extra_price,
+    )
+
+    return dashboard_redirect_with_toast(
+        f"Added 30 minutes successfully (+${extra_charge:.2f}). New total: ${total_price:.2f}.",
+        "success",
+        "reservations",
+    )
+
+
 # ------------------ RUN ------------------
 
 if __name__ == "__main__":
     init_db()       # <-- creates tables automatically
     ensure_fb_tables()
+    ensure_business_feature_columns()
+    ensure_reservation_extension_columns()
+    ensure_resource_availability_tables()
     app.run(host="0.0.0.0", port=10000)
 
 

@@ -199,7 +199,6 @@ def ensure_fb_tables():
 
 _business_feature_columns_ready = False
 _reservation_extension_columns_ready = False
-_service_capacity_columns_ready = False
 
 def ensure_business_feature_columns():
     global _business_feature_columns_ready
@@ -234,18 +233,166 @@ def ensure_reservation_extension_columns():
     _reservation_extension_columns_ready = True
 
 
-def ensure_service_capacity_columns():
-    global _service_capacity_columns_ready
-    if _service_capacity_columns_ready:
+_service_metadata_columns_ready = False
+
+def ensure_service_metadata_columns():
+    global _service_metadata_columns_ready
+    if _service_metadata_columns_ready:
         return
 
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("ALTER TABLE services ADD COLUMN IF NOT EXISTS capacity_units_required INTEGER NOT NULL DEFAULT 1")
+    c.execute("ALTER TABLE services ADD COLUMN IF NOT EXISTS sport_category TEXT")
+    c.execute("ALTER TABLE services ADD COLUMN IF NOT EXISTS night_price NUMERIC(10,2)")
+    c.execute("ALTER TABLE services ADD COLUMN IF NOT EXISTS capacity_units_used INTEGER")
     conn.commit()
     conn.close()
+    _service_metadata_columns_ready = True
 
-    _service_capacity_columns_ready = True
+
+SPECIAL_NIGHT_PRICE_MAP = {
+    "basketball half court 1 hour": 20.0,
+    "basketball half court 2 hour": 40.0,
+    "basketball full court 1 hour": 35.0,
+    "basketball full court 2 hour": 70.0,
+    "tennis full court 1 hour": 15.0,
+    "tennis full court 2 hour": 40.0,
+}
+
+SPORT_ALIASES = {
+    "basketball": {"basketball", "basket ball", "basket"},
+    "tennis": {"tennis"},
+    "padel": {"padel"},
+}
+
+def is_night_time_str(time_str, threshold="19:00"):
+    try:
+        normalized = normalize_time_str(time_str) or str(time_str)
+        return time_to_minutes(normalized) >= time_to_minutes(threshold)
+    except Exception:
+        return False
+
+def infer_service_sport_from_name(service_name):
+    name = (service_name or "").strip().lower()
+    for sport, aliases in SPORT_ALIASES.items():
+        if any(alias in name for alias in aliases):
+            return sport
+    return None
+
+def infer_service_capacity_units_from_name(service_name):
+    name = (service_name or "").strip().lower()
+    if "full court" in name:
+        return 2
+    if "half court" in name:
+        return 1
+    return 1
+
+def get_service_metadata_row(business_id, service_name):
+    ensure_service_metadata_columns()
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT id, name, price, duration_min, sport_category, night_price, capacity_units_used
+        FROM services
+        WHERE business_id = %s
+          AND lower(trim(name)) = lower(trim(%s))
+        LIMIT 1
+        """,
+        (business_id, service_name),
+    )
+    row = c.fetchone()
+    if not row:
+        c.execute(
+            """
+            SELECT id, name, price, duration_min, sport_category, night_price, capacity_units_used
+            FROM services
+            WHERE business_id = %s
+              AND lower(name) LIKE lower(%s)
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (business_id, f"%{service_name.strip()}%"),
+        )
+        row = c.fetchone()
+    conn.close()
+    return row
+
+def get_service_sport_category(business_id, service_name):
+    row = get_service_metadata_row(business_id, service_name)
+    value = (row.get("sport_category") or "").strip().lower() if row else ""
+    return value or infer_service_sport_from_name(service_name)
+
+def get_service_capacity_units(business_id, service_name):
+    row = get_service_metadata_row(business_id, service_name)
+    value = safe_int(row.get("capacity_units_used") if row else None, 0)
+    return value if value > 0 else infer_service_capacity_units_from_name(service_name)
+
+def get_service_night_price(business_id, service_name):
+    row = get_service_metadata_row(business_id, service_name)
+    if row and row.get("night_price") is not None:
+        return safe_float(row.get("night_price"), 0.0)
+    return SPECIAL_NIGHT_PRICE_MAP.get((service_name or "").strip().lower())
+
+def get_effective_service_price(business_id, service_name, time_str=None):
+    base_price = float(get_service_info(business_id, service_name).get("price", 0) or 0)
+    if time_str and is_night_time_str(time_str):
+        night_price = get_service_night_price(business_id, service_name)
+        if night_price is not None:
+            return float(night_price)
+    return base_price
+
+def get_effective_service_price_for_reservation_row(business, reservation):
+    return get_effective_service_price(business["id"], reservation.get("service"), reservation.get("time"))
+
+def get_service_shared_pool_key(business_id, service_name):
+    sport = get_service_sport_category(business_id, service_name)
+    if sport in {"basketball", "tennis"}:
+        return "shared_tennis_basketball_court"
+    return None
+
+def get_service_pool_capacity(business_id, resource, service_name):
+    if get_service_shared_pool_key(business_id, service_name):
+        return 2
+    return int((resource or {}).get("capacity") or 1)
+
+def get_available_sports_for_business(business_id):
+    ensure_service_metadata_columns()
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT name, sport_category FROM services WHERE business_id = %s ORDER BY id DESC", (business_id,))
+    rows = c.fetchall()
+    conn.close()
+    sports = []
+    seen = set()
+    for row in rows:
+        sport = ((row.get("sport_category") or "").strip().lower() or infer_service_sport_from_name(row.get("name")))
+        if sport and sport not in seen:
+            seen.add(sport)
+            sports.append(sport)
+    return sports
+
+def should_use_sport_first_flow(business_id):
+    sports = get_available_sports_for_business(business_id)
+    return len([s for s in sports if s in {"padel", "basketball", "tennis"}]) >= 2
+
+def format_service_bullets_for_sport(business_id, sport):
+    services = []
+    for s in get_service_names_for_business(business_id):
+        if (get_service_sport_category(business_id, s) or "").lower() == (sport or "").lower():
+            services.append(s)
+    if not services:
+        return "• No services configured yet"
+    return "\n".join([f"• {s}" for s in services])
+
+def resolve_valid_service_and_sport(business_id, text, selected_sport=None):
+    valid_service, available_services = validate_service_for_business(business_id, text)
+    if not valid_service:
+        return None, None, available_services
+    sport = get_service_sport_category(business_id, valid_service)
+    if selected_sport and sport and sport.lower() != selected_sport.lower():
+        return None, sport, available_services
+    return valid_service, sport, available_services
 
 
 _resource_availability_tables_ready = False
@@ -777,15 +924,12 @@ def ai_pick_service(business: dict, user_text: str):
 
 
 def get_service_info(business_id, service_name):
-    ensure_service_capacity_columns()
-
     conn = get_db_connection()
     c = conn.cursor()
 
     c.execute(
         """
-        SELECT name, price, duration_min,
-               COALESCE(capacity_units_required, 1) AS capacity_units_required
+        SELECT name, price, duration_min
         FROM services
         WHERE business_id = %s
           AND lower(trim(name)) = lower(trim(%s))
@@ -798,8 +942,7 @@ def get_service_info(business_id, service_name):
     if not row:
         c.execute(
             """
-            SELECT name, price, duration_min,
-                   COALESCE(capacity_units_required, 1) AS capacity_units_required
+            SELECT name, price, duration_min
             FROM services
             WHERE business_id = %s
               AND lower(name) LIKE lower(%s)
@@ -816,10 +959,9 @@ def get_service_info(business_id, service_name):
         return {
             "price": float(row["price"] or 0),
             "duration": int(row["duration_min"] or 45),
-            "capacity_units": int(row.get("capacity_units_required") or 1),
         }
 
-    return {"price": 0.0, "duration": 45, "capacity_units": 1}
+    return {"price": 0.0, "duration": 45}
 
 
 def get_service_names_for_business(business_id):
@@ -829,10 +971,6 @@ def get_service_names_for_business(business_id):
     rows = c.fetchall()
     conn.close()
     return [r["name"] for r in rows]
-
-
-def get_service_capacity_units(business_id, service_name):
-    return int(get_service_info(business_id, service_name).get("capacity_units", 1) or 1)
 
 
 def format_service_list(business_id):
@@ -1326,7 +1464,7 @@ def get_confirmed_reservations_for_date_fast(business_id, date_iso):
     c = conn.cursor()
     c.execute(
         """
-        SELECT id, service, time, resource_id, COALESCE(extra_minutes, 0) AS extra_minutes
+        SELECT id, service, time, resource_id
         FROM reservations
         WHERE business_id = %s
           AND date = %s
@@ -1352,7 +1490,6 @@ def compute_dashboard_report_metrics(business, services, reservations_rows):
         service_meta[(s["name"] or "").strip().lower()] = {
             "price": float(s.get("price") or 0),
             "duration": int(s.get("duration_min") or 45),
-            "capacity_units": int(s.get("capacity_units_required") or 1),
         }
 
     def get_meta(service_name):
@@ -1362,7 +1499,7 @@ def compute_dashboard_report_metrics(business, services, reservations_rows):
         for name, meta in service_meta.items():
             if cleaned in name or name in cleaned:
                 return meta
-        return {"price": 0.0, "duration": 45, "capacity_units": 1}
+        return {"price": 0.0, "duration": 45}
 
     def summarize_metrics(rows):
         total = len(rows)
@@ -1378,7 +1515,7 @@ def compute_dashboard_report_metrics(business, services, reservations_rows):
         for r in rows:
             status = (r.get("status") or "").upper()
             meta = get_meta(r.get("service"))
-            base_price = float(meta.get("price") or 0)
+            base_price = get_effective_service_price_for_reservation_row(business, r)
             extra_price = float(r.get("extra_price") or 0)
             price = base_price + extra_price
 
@@ -1500,56 +1637,34 @@ def build_service_duration_cache(business_id, reservations_rows, extra_service_n
     return cache
 
 
-def build_service_capacity_cache(business_id, reservations_rows, extra_service_names=None):
-    names = set()
-    for row in reservations_rows:
-        if row.get("service"):
-            names.add(row["service"])
-
-    if extra_service_names:
-        for s in extra_service_names:
-            if s:
-                names.add(s)
-
-    cache = {}
-    for name in names:
-        cache[name] = int(get_service_info(business_id, name).get("capacity_units", 1))
-    return cache
-
-
 def is_resource_slot_full_fast(
+    business_id,
     resource,
     reservations_rows,
     service_duration_cache,
-    service_capacity_cache,
     new_time,
     new_service,
 ):
-    capacity = int(resource.get("capacity") or 1)
-    new_duration = int(service_duration_cache.get(new_service, 45))
-    new_units = int(service_capacity_cache.get(new_service, 1))
-    new_start = time_to_minutes(new_time)
-
-    overlapping_units = 0
     resource_id = resource["id"]
-
+    new_duration = int(service_duration_cache.get(new_service, 45))
+    new_start = time_to_minutes(new_time)
+    new_units = get_service_capacity_units(business_id, new_service)
+    shared_pool = get_service_shared_pool_key(business_id, new_service)
+    capacity = 2 if shared_pool else int(resource.get("capacity") or 1)
+    overlapping_units = 0
     for row in reservations_rows:
-        if row.get("resource_id") != resource_id:
+        existing_service = row.get("service")
+        existing_pool = get_service_shared_pool_key(business_id, existing_service)
+        same_pool = existing_pool == shared_pool if shared_pool else row.get("resource_id") == resource_id
+        if not same_pool:
             continue
-
         existing_time = normalize_time_str(row["time"])
         if not existing_time:
             continue
-
         existing_start = time_to_minutes(existing_time)
-        existing_duration = int(service_duration_cache.get(row["service"], 45))
-        existing_units = int(service_capacity_cache.get(row["service"], 1))
-
+        existing_duration = int(service_duration_cache.get(existing_service, 45))
         if ranges_overlap(new_start, new_duration, existing_start, existing_duration):
-            overlapping_units += existing_units
-            if overlapping_units + new_units > capacity:
-                return True
-
+            overlapping_units += get_service_capacity_units(business_id, existing_service)
     return (overlapping_units + new_units) > capacity
 
 
@@ -1562,7 +1677,6 @@ def get_manual_reservation_resource_choice_fast(
     eligible_resources,
     reservations_rows,
     service_duration_cache,
-    service_capacity_cache,
 ):
     resource_id_raw = (resource_id_raw or "").strip()
 
@@ -1574,10 +1688,10 @@ def get_manual_reservation_resource_choice_fast(
             if not is_time_within_business_hours(time_, rules["open_time"], rules["close_time"]):
                 continue
             if not is_resource_slot_full_fast(
+                business_id,
                 r,
                 reservations_rows,
                 service_duration_cache,
-                service_capacity_cache,
                 time_,
                 service_name,
             ):
@@ -1615,10 +1729,10 @@ def get_manual_reservation_resource_choice_fast(
         return None, "Selected resource is outside working hours at that time."
 
     if is_resource_slot_full_fast(
+        business_id,
         resource,
         reservations_rows,
         service_duration_cache,
-        service_capacity_cache,
         time_,
         service_name,
     ):
@@ -1682,7 +1796,7 @@ def get_confirmed_resource_reservations_for_date(business_id, date_iso, resource
     c = conn.cursor()
     c.execute(
         """
-        SELECT resource_id, service, time, COALESCE(extra_minutes, 0) AS extra_minutes
+        SELECT resource_id, service, time
         FROM reservations
         WHERE business_id = %s
           AND date = %s
@@ -1710,41 +1824,26 @@ def get_service_duration_cached(business_id, service_name, cache=None):
     return duration
 
 
-def get_service_capacity_units_cached(business_id, service_name, cache=None):
-    key = (service_name or "").strip().lower()
-    if cache is not None and key in cache:
-        return cache[key]
-    units = int(get_service_info(business_id, service_name).get("capacity_units", 1))
-    if cache is not None:
-        cache[key] = units
-    return units
-
-
-def is_resource_slot_full_from_prefetched(
-    business_id,
-    resource,
-    new_time,
-    new_service,
-    reservations_by_resource,
-    service_duration_cache=None,
-    service_capacity_cache=None,
-):
-    capacity = int(resource.get("capacity") or 1)
+def is_resource_slot_full_from_prefetched(business_id, resource, new_time, new_service, reservations_by_resource, service_duration_cache=None):
     new_duration = int(get_service_duration_cached(business_id, new_service, service_duration_cache))
-    new_units = int(get_service_capacity_units_cached(business_id, new_service, service_capacity_cache))
     new_start = time_to_minutes(new_time)
-
+    new_units = get_service_capacity_units(business_id, new_service)
+    shared_pool = get_service_shared_pool_key(business_id, new_service)
+    capacity = 2 if shared_pool else int(resource.get("capacity") or 1)
     overlapping_units = 0
-    for row in reservations_by_resource.get(resource["id"], []):
-        existing_time = normalize_time_str(row["time"])
-        if not existing_time:
-            continue
-        existing_duration = int(get_service_duration_cached(business_id, row["service"], service_duration_cache))
-        existing_units = int(get_service_capacity_units_cached(business_id, row["service"], service_capacity_cache))
-        existing_start = time_to_minutes(existing_time)
-        if ranges_overlap(new_start, new_duration, existing_start, existing_duration):
-            overlapping_units += existing_units
-
+    row_sets = reservations_by_resource.values() if shared_pool else [reservations_by_resource.get(resource["id"], [])]
+    for rows in row_sets:
+        for row in rows:
+            existing_service = row.get("service")
+            if shared_pool and get_service_shared_pool_key(business_id, existing_service) != shared_pool:
+                continue
+            existing_time = normalize_time_str(row["time"])
+            if not existing_time:
+                continue
+            existing_duration = int(get_service_duration_cached(business_id, existing_service, service_duration_cache))
+            existing_start = time_to_minutes(existing_time)
+            if ranges_overlap(new_start, new_duration, existing_start, existing_duration):
+                overlapping_units += get_service_capacity_units(business_id, existing_service)
     return (overlapping_units + new_units) > capacity
 
 def reservation_has_ended(business, reservation):
@@ -1831,11 +1930,6 @@ def _handle_manual_add_reservation():
             reservations_rows,
             extra_service_names=[valid_service],
         )
-        service_capacity_cache = build_service_capacity_cache(
-            business_id,
-            reservations_rows,
-            extra_service_names=[valid_service],
-        )
 
         chosen_resource = None
 
@@ -1849,7 +1943,6 @@ def _handle_manual_add_reservation():
                 eligible_resources,
                 reservations_rows,
                 service_duration_cache,
-                service_capacity_cache,
             )
             if error_message:
                 print("manual_add_reservation:", error_message, flush=True)
@@ -2288,46 +2381,16 @@ def tr_confirmation(lang, name, service, date, time, total_price, calendar_added
         "fr": f"\nAvec : {resource_name}" if resource_name else "",
         "ar": f"\nمع: {resource_name}" if resource_name else "",
     }
-
     calendar_line_map = {
         "en": "\n🗓 Also added to our Google Calendar." if calendar_added else "",
         "fr": "\n🗓 Également ajouté à notre Google Calendar." if calendar_added else "",
         "ar": "\n🗓 وتمت إضافته أيضاً إلى Google Calendar." if calendar_added else "",
     }
-
     messages = {
-        "en": (
-            f"✅ Your reservation is confirmed!\n"
-            f"Name: {name}\n"
-            f"Service: {service}{resource_line_map['en']}\n"
-            f"Date: {date}\n"
-            f"Time: {time}\n"
-            f"Total Price: ${total_price:.2f}"
-            f"{calendar_line_map['en']}\n\n"
-            f"Thank you for booking with us 🤍"
-        ),
-        "fr": (
-            f"✅ Votre réservation est confirmée !\n"
-            f"Nom : {name}\n"
-            f"Service : {service}{resource_line_map['fr']}\n"
-            f"Date : {date}\n"
-            f"Heure : {time}\n"
-            f"Prix total : ${total_price:.2f}"
-            f"{calendar_line_map['fr']}\n\n"
-            f"Merci pour votre réservation 🤍"
-        ),
-        "ar": (
-            f"✅ تم تأكيد حجزك!\n"
-            f"الاسم: {name}\n"
-            f"الخدمة: {service}{resource_line_map['ar']}\n"
-            f"التاريخ: {date}\n"
-            f"الوقت: {time}\n"
-            f"السعر الإجمالي: ${total_price:.2f}"
-            f"{calendar_line_map['ar']}\n\n"
-            f"شكراً لحجزك معنا 🤍"
-        ),
+        "en": f"✅ Your reservation is confirmed!\nName: {name}\nService: {service}{resource_line_map['en']}\nDate: {date}\nTime: {time}{calendar_line_map['en']}\n\nThank you for booking with us 🤍",
+        "fr": f"✅ Votre réservation est confirmée !\nNom : {name}\nService : {service}{resource_line_map['fr']}\nDate : {date}\nHeure : {time}{calendar_line_map['fr']}\n\nMerci pour votre réservation 🤍",
+        "ar": f"✅ تم تأكيد حجزك!\nالاسم: {name}\nالخدمة: {service}{resource_line_map['ar']}\nالتاريخ: {date}\nالوقت: {time}{calendar_line_map['ar']}\n\nشكراً لحجزك معنا 🤍",
     }
-
     return messages.get(lang, messages["en"])
 
 def tr_cancellation(lang, name, service, date, time, resource_name=None):
@@ -2719,15 +2782,12 @@ def validate_service_for_business(business_id, service_name):
 
     return None, services
 def get_service_row_for_business(business_id, service_name):
-    ensure_service_capacity_columns()
-
     conn = get_db_connection()
     c = conn.cursor()
 
     c.execute(
         """
-        SELECT id, name, price, duration_min,
-               COALESCE(capacity_units_required, 1) AS capacity_units_required
+        SELECT id, name, price, duration_min, sport_category, night_price, capacity_units_used
         FROM services
         WHERE business_id = %s
           AND lower(trim(name)) = lower(trim(%s))
@@ -2740,8 +2800,7 @@ def get_service_row_for_business(business_id, service_name):
     if not row:
         c.execute(
             """
-            SELECT id, name, price, duration_min,
-                   COALESCE(capacity_units_required, 1) AS capacity_units_required
+            SELECT id, name, price, duration_min
             FROM services
             WHERE business_id = %s
               AND lower(name) LIKE lower(%s)
@@ -2887,54 +2946,33 @@ def get_resource_day_rules(business_id, resource_id, date_iso):
 
 
 def is_resource_slot_full(business_id, resource_id, date_iso, new_time, new_service):
-    """
-    Capacity-aware per-resource slot check.
-    Staff/courts usually have capacity=1.
-    Pools/rooms can have capacity > 1.
-    Services can also consume more than 1 unit (for example, full court = 2).
-    """
     resource = get_resource_by_id(resource_id, business_id)
     if not resource:
         return True
-
-    capacity = int(resource.get("capacity") or 1)
-
-    new_service_info = get_service_info(business_id, new_service)
-    new_duration = int(new_service_info.get("duration", 45))
-    new_units = int(new_service_info.get("capacity_units", 1))
+    new_duration = int(get_service_info(business_id, new_service).get("duration", 45))
     new_start = time_to_minutes(new_time)
-
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute(
-        """
-        SELECT service, time
-        FROM reservations
-        WHERE business_id = %s
-          AND resource_id = %s
-          AND date = %s
-          AND status = 'CONFIRMED'
-        """,
-        (business_id, resource_id, date_iso),
-    )
-    rows = c.fetchall()
-    conn.close()
-
+    new_units = get_service_capacity_units(business_id, new_service)
+    shared_pool = get_service_shared_pool_key(business_id, new_service)
+    capacity = 2 if shared_pool else int(resource.get("capacity") or 1)
+    conn = get_db_connection(); c = conn.cursor()
+    c.execute("""SELECT service, time, resource_id, COALESCE(extra_minutes, 0) AS extra_minutes
+                 FROM reservations
+                 WHERE business_id = %s AND date = %s AND status = 'CONFIRMED'""", (business_id, date_iso))
+    rows = c.fetchall(); conn.close()
     overlapping_units = 0
-
     for row in rows:
+        existing_service = row["service"]
+        existing_pool = get_service_shared_pool_key(business_id, existing_service)
+        same_pool = existing_pool == shared_pool if shared_pool else row.get("resource_id") == resource_id
+        if not same_pool:
+            continue
         existing_time = normalize_time_str(row["time"])
         if not existing_time:
             continue
-
-        existing_service_info = get_service_info(business_id, row["service"])
-        existing_duration = int(existing_service_info.get("duration", 45))
-        existing_units = int(existing_service_info.get("capacity_units", 1))
+        existing_duration = get_reservation_total_duration_minutes(business_id, existing_service, extra_minutes=row.get("extra_minutes") or 0)
         existing_start = time_to_minutes(existing_time)
-
         if ranges_overlap(new_start, new_duration, existing_start, existing_duration):
-            overlapping_units += existing_units
-
+            overlapping_units += get_service_capacity_units(business_id, existing_service)
     return (overlapping_units + new_units) > capacity
 
 
@@ -3443,23 +3481,63 @@ def process_incoming_message(business, phone, text):
             return "ok", 200
 
         state["name"] = t
+
+        if should_use_sport_first_flow(business["id"]):
+            sports = get_available_sports_for_business(business["id"])
+            state["step"] = "awaiting_sport"
+            sports_text = "\n".join([f"• {s.capitalize()}" for s in sports]) if sports else "• Padel\n• Basketball\n• Tennis"
+            prompt_map = {
+                "en": f"Thanks, {t}. Which sport would you like?\nAvailable sports:\n{sports_text}",
+                "fr": f"Merci, {t}. Quel sport souhaitez-vous ?\nSports disponibles :\n{sports_text}",
+                "ar": f"شكراً {t}. أي رياضة بدك؟\nالرياضات المتوفرة:\n{sports_text}",
+            }
+            send_friendly_message(phone, business, lang, prompt_map.get(lang, prompt_map["en"]), purpose="ask_sport")
+            return "ok", 200
+
         state["step"] = "awaiting_service"
-
         services_text = format_service_bullets_for_business(business["id"])
-
         service_prompt_map = {
             "en": f"Thanks, {t}. Which service would you like?\nAvailable services:\n{services_text}",
             "fr": f"Merci, {t}. Quel service souhaitez-vous ?\nServices disponibles :\n{services_text}",
             "ar": f"شكراً {t}. أي خدمة بدك؟\nالخدمات المتوفرة:\n{services_text}",
         }
+        send_friendly_message(phone, business, lang, service_prompt_map.get(lang, service_prompt_map["en"]), purpose="ask_service")
+        return "ok", 200
 
-        send_friendly_message(
-            phone,
-            business,
-            lang,
-            service_prompt_map.get(lang, service_prompt_map["en"]),
-            purpose="ask_service",
-        )
+    if state and state.get("step") == "awaiting_sport":
+        lang = state.get("lang", lang)
+        text_lower = t.lower().strip()
+        available_sports = get_available_sports_for_business(business["id"])
+        direct_service, direct_sport, _available = resolve_valid_service_and_sport(business["id"], t, None)
+        if direct_service and direct_sport:
+            state["selected_sport"] = direct_sport
+            state["service"] = direct_service
+            state["step"] = "awaiting_date"
+            send_friendly_message(phone, business, lang, tr(lang, "ask_date", service=direct_service), purpose="ask_date")
+            return "ok", 200
+        chosen_sport = None
+        for sport in available_sports:
+            if sport.lower() == text_lower or sport.lower() in text_lower:
+                chosen_sport = sport
+                break
+        if not chosen_sport:
+            sports_text = "\n".join([f"• {s.capitalize()}" for s in available_sports]) if available_sports else "• Padel\n• Basketball\n• Tennis"
+            retry_map = {
+                "en": f"Please choose a sport first.\nAvailable sports:\n{sports_text}",
+                "fr": f"Veuillez d'abord choisir un sport.\nSports disponibles :\n{sports_text}",
+                "ar": f"من فضلك اختار الرياضة أولاً.\nالرياضات المتوفرة:\n{sports_text}",
+            }
+            send_friendly_message(phone, business, lang, retry_map.get(lang, retry_map["en"]), purpose="ask_sport")
+            return "ok", 200
+        state["selected_sport"] = chosen_sport
+        state["step"] = "awaiting_service"
+        services_text = format_service_bullets_for_sport(business["id"], chosen_sport)
+        prompt_map = {
+            "en": f"Great — {chosen_sport.capitalize()}. Which service would you like?\nAvailable services:\n{services_text}",
+            "fr": f"Parfait — {chosen_sport.capitalize()}. Quel service souhaitez-vous ?\nServices disponibles :\n{services_text}",
+            "ar": f"ممتاز — {chosen_sport.capitalize()}. أي خدمة بدك؟\nالخدمات المتوفرة:\n{services_text}",
+        }
+        send_friendly_message(phone, business, lang, prompt_map.get(lang, prompt_map["en"]), purpose="ask_service")
         return "ok", 200
 
     # STEP 2 – SERVICE (keywords + AI fallback
@@ -3502,9 +3580,16 @@ def process_incoming_message(business, phone, text):
         valid_service, available_services = validate_service_for_business(
             business["id"], normalized
         )
+        selected_sport = (state.get("selected_sport") or "").strip().lower()
+        if valid_service and selected_sport:
+            service_sport = (get_service_sport_category(business["id"], valid_service) or "").strip().lower()
+            if service_sport and service_sport != selected_sport:
+                valid_service = None
 
         if not valid_service:
-            if available_services:
+            if selected_sport:
+                services_text = format_service_bullets_for_sport(business["id"], selected_sport)
+            elif available_services:
                 services_text = "\n".join([f"• {s}" for s in available_services])
             else:
                 services_text = "• No services configured yet"
@@ -3536,18 +3621,6 @@ def process_incoming_message(business, phone, text):
     if state and state.get("step") == "awaiting_date":
         lang = state.get("lang", lang)
 
-        corrected_service, _ = validate_service_for_business(business["id"], t)
-        if corrected_service and corrected_service != state.get("service"):
-            state["service"] = corrected_service
-            send_friendly_message(
-                phone,
-                business,
-                lang,
-                tr(lang, "ask_date", service=corrected_service),
-                purpose="ask_date",
-            )
-            return "ok", 200
-
         if is_booking_intent(t) or is_cancel_intent(t):
             send_friendly_message(
                 phone,
@@ -3556,6 +3629,12 @@ def process_incoming_message(business, phone, text):
                 tr(lang, "ask_date", service=state.get("service", "")),
                 purpose="ask_date",
             )
+            return "ok", 200
+
+        corrected_service, _sport, _available = resolve_valid_service_and_sport(business["id"], t, state.get("selected_sport"))
+        if corrected_service:
+            state["service"] = corrected_service
+            send_friendly_message(phone, business, lang, tr(lang, "ask_date", service=corrected_service), purpose="ask_date")
             return "ok", 200
 
         try:
@@ -3582,19 +3661,6 @@ def process_incoming_message(business, phone, text):
     # STEP 4 – TIME
     if state and state.get("step") == "awaiting_time":
         lang = state.get("lang", lang)
-
-        corrected_service, _ = validate_service_for_business(business["id"], t)
-        if corrected_service and corrected_service != state.get("service"):
-            state["service"] = corrected_service
-            state["step"] = "awaiting_date"
-            send_friendly_message(
-                phone,
-                business,
-                lang,
-                tr(lang, "ask_date", service=corrected_service),
-                purpose="ask_date",
-            )
-            return "ok", 200
 
         if is_booking_intent(t) or is_cancel_intent(t):
             send_friendly_message(phone, business, lang, tr(lang, "ask_time"), purpose="ask_time")
@@ -3861,8 +3927,7 @@ def calculate_dashboard_metrics(business, reservations):
         if r["date"] != today_iso:
             continue
 
-        service_info = get_service_info(business["id"], r["service"])
-        price = float(service_info.get("price", 0) or 0)
+        price = get_effective_service_price_for_reservation_row(business, r)
 
         if r["status"] == "CONFIRMED":
             metrics["today_booked_revenue"] += price
@@ -3876,8 +3941,7 @@ def get_services_for_business(business_id):
     c = conn.cursor()
     c.execute(
         """
-        SELECT id, name, price, duration_min,
-               COALESCE(capacity_units_required, 1) AS capacity_units_required
+        SELECT id, name, price, duration_min, sport_category, night_price, capacity_units_used
         FROM services
         WHERE business_id = %s
         ORDER BY id DESC
@@ -4253,18 +4317,17 @@ def admin_services(business_id):
         if name:
             c.execute(
                 """
-                INSERT INTO services (name, price, duration_min, business_id, capacity_units_required)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO services (name, price, duration_min, business_id)
+                VALUES (%s, %s, %s, %s)
                 """,
-                (name, price_f, dur_i, business_id, 1),
+                (name, price_f, dur_i, business_id),
             )
             conn.commit()
 
     # List services for this business
     c.execute(
         """
-        SELECT id, name, price, duration_min,
-               COALESCE(capacity_units_required, 1) AS capacity_units_required
+        SELECT id, name, price, duration_min, sport_category, night_price, capacity_units_used
         FROM services
         WHERE business_id=%s
         ORDER BY id
@@ -4479,8 +4542,8 @@ def dashboard():
     ensure_fb_tables()
     ensure_business_feature_columns()
     ensure_reservation_extension_columns()
-    ensure_service_capacity_columns()
     ensure_resource_availability_tables()
+    ensure_service_metadata_columns()
 
     requested_business_id = request.args.get("business_id", type=int)
 
@@ -4527,22 +4590,29 @@ def dashboard():
     # Load services once
     c.execute(
         """
-        SELECT id, name, price, duration_min,
-               COALESCE(capacity_units_required, 1) AS capacity_units_required
+        SELECT id, name, price, duration_min, sport_category, night_price, capacity_units_used
         FROM services
         WHERE business_id = %s
         ORDER BY id DESC
         """,
         (business_id,),
     )
-    services = c.fetchall()
+    services = [dict(s) for s in c.fetchall()]
+    for s in services:
+        if not s.get("sport_category"):
+            s["sport_category"] = infer_service_sport_from_name(s.get("name"))
+        if s.get("night_price") is None:
+            inferred_night = SPECIAL_NIGHT_PRICE_MAP.get((s.get("name") or "").strip().lower())
+            if inferred_night is not None:
+                s["night_price"] = inferred_night
+        if not s.get("capacity_units_used"):
+            s["capacity_units_used"] = infer_service_capacity_units_from_name(s.get("name"))
 
     service_meta = {}
     for s in services:
         service_meta[(s["name"] or "").strip().lower()] = {
             "price": float(s.get("price") or 0),
             "duration": int(s.get("duration_min") or 45),
-            "capacity_units": int(s.get("capacity_units_required") or 1),
         }
 
     def get_service_meta(service_name):
@@ -4737,7 +4807,7 @@ def dashboard():
         if r["date"] != today_iso:
             continue
 
-        price = get_service_meta(r["service"])["price"] + float(r.get("extra_price") or 0)
+        price = get_effective_service_price_for_reservation_row(business, r) + float(r.get("extra_price") or 0)
 
         if r["status"] == "CONFIRMED":
             dashboard_metrics["today_booked_revenue"] += price
@@ -5084,30 +5154,43 @@ def update_business_settings():
 def add_service():
     if "business_id" not in session:
         return redirect("/login")
-
-    ensure_service_capacity_columns()
-
+    ensure_service_metadata_columns()
     business_id = session["business_id"]
     name = request.form.get("name", "").strip()
     price = float(request.form.get("price") or 0)
     duration_min = int(request.form.get("duration_min") or 45)
-    capacity_units_required = normalize_capacity(request.form.get("capacity_units_required"), default=1)
-
+    sport_category = (request.form.get("sport_category") or infer_service_sport_from_name(name) or "").strip().lower() or None
+    night_price_raw = request.form.get("night_price")
+    night_price = safe_float(night_price_raw, 0.0) if str(night_price_raw or "").strip() != "" else None
+    capacity_units_used = max(1, safe_int(request.form.get("capacity_units_used") or infer_service_capacity_units_from_name(name), 1))
     if name:
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute(
-            """
-            INSERT INTO services (name, price, duration_min, business_id, capacity_units_required)
-            VALUES (%s, %s, %s, %s, %s)
-            """,
-            (name, price, duration_min, business_id, capacity_units_required),
-        )
-        conn.commit()
-        conn.close()
-
+        conn = get_db_connection(); c = conn.cursor()
+        c.execute("""INSERT INTO services (name, price, duration_min, business_id, sport_category, night_price, capacity_units_used)
+                     VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                  (name, price, duration_min, business_id, sport_category, night_price, capacity_units_used))
+        conn.commit(); conn.close()
     return redirect("/dashboard?tab=services")
 
+@app.route("/services/update/<int:service_id>", methods=["POST"])
+def update_service(service_id):
+    if "business_id" not in session:
+        return redirect("/login")
+    ensure_service_metadata_columns()
+    business_id = session["business_id"]
+    name = (request.form.get("name") or "").strip()
+    price = safe_float(request.form.get("price") or 0, 0.0)
+    duration_min = safe_int(request.form.get("duration_min") or 45, 45)
+    sport_category = (request.form.get("sport_category") or infer_service_sport_from_name(name) or "").strip().lower() or None
+    night_price_raw = request.form.get("night_price")
+    night_price = safe_float(night_price_raw, 0.0) if str(night_price_raw or "").strip() != "" else None
+    capacity_units_used = max(1, safe_int(request.form.get("capacity_units_used") or infer_service_capacity_units_from_name(name), 1))
+    conn = get_db_connection(); c = conn.cursor()
+    c.execute("""UPDATE services
+                 SET name=%s, price=%s, duration_min=%s, sport_category=%s, night_price=%s, capacity_units_used=%s
+                 WHERE id=%s AND business_id=%s""",
+              (name, price, duration_min, sport_category, night_price, capacity_units_used, service_id, business_id))
+    conn.commit(); conn.close()
+    return redirect("/dashboard?tab=services")
 
 @app.route("/services/delete/<int:service_id>", methods=["POST"])
 def delete_service(service_id):
@@ -5142,7 +5225,7 @@ def add_resource():
     color_tag = (request.form.get("color_tag") or "").strip().lower() or None
 
     if not name:
-        return redirect("/dashboard?tab=resources")
+        return dashboard_redirect_with_toast("Resource availability updated.", "success", "resources")
 
     conn = get_db_connection()
     c = conn.cursor()
@@ -5711,60 +5794,42 @@ def is_reservation_extension_possible(business, reservation, increment_minutes=3
     resource_id = reservation.get("resource_id")
     service_name = reservation["service"]
     increment_minutes = int(increment_minutes or 0)
-
     base_duration = get_reservation_base_duration_minutes(business_id, service_name)
     extra_minutes = int(reservation.get("extra_minutes") or 0)
-    current_total_duration = base_duration + extra_minutes
-    proposed_total_duration = current_total_duration + increment_minutes
-    reservation_units = get_service_capacity_units(business_id, service_name)
-
+    proposed_total_duration = base_duration + extra_minutes + increment_minutes
     start_minutes = time_to_minutes(start_time)
     proposed_end_minutes = start_minutes + proposed_total_duration
-
+    shared_pool = get_service_shared_pool_key(business_id, service_name)
     if resource_id:
         rules = get_resource_day_rules(business_id, resource_id, date_iso)
-        capacity = int((get_resource_by_id(resource_id, business_id) or {}).get("capacity") or 1)
+        resource = get_resource_by_id(resource_id, business_id)
     else:
         rules = get_day_rules(business_id, date_iso)
-        capacity = 1
-
+        resource = None
     if rules.get("closed"):
         return False, "Resource is unavailable on that date."
-
-    close_minutes = time_to_minutes(rules["close_time"])
-    if proposed_end_minutes > close_minutes:
+    if proposed_end_minutes > time_to_minutes(rules["close_time"]):
         return False, "The next 30 minutes are outside working hours."
-
-    reservations_rows = get_confirmed_reservations_for_date_excluding_fast(
-        business_id,
-        date_iso,
-        excluded_reservation_id=reservation["id"],
-    )
-
+    capacity = get_service_pool_capacity(business_id, resource, service_name)
+    current_units = get_service_capacity_units(business_id, service_name)
+    rows = get_confirmed_reservations_for_date_excluding_fast(business_id, date_iso, excluded_reservation_id=reservation["id"])
     overlapping_units = 0
-    for row in reservations_rows:
-        if resource_id and row.get("resource_id") != resource_id:
+    for row in rows:
+        existing_service = row["service"]
+        existing_pool = get_service_shared_pool_key(business_id, existing_service)
+        same_pool = existing_pool == shared_pool if shared_pool else (row.get("resource_id") == resource_id if resource_id else True)
+        if not same_pool:
             continue
-
         existing_time = normalize_time_str(row["time"])
         if not existing_time:
             continue
-
         existing_start = time_to_minutes(existing_time)
-        existing_duration = get_reservation_total_duration_minutes(
-            business_id,
-            row["service"],
-            extra_minutes=row.get("extra_minutes") or 0,
-        )
-        existing_units = get_service_capacity_units(business_id, row["service"])
-
+        existing_duration = get_reservation_total_duration_minutes(business_id, existing_service, extra_minutes=row.get("extra_minutes") or 0)
         if ranges_overlap(start_minutes, proposed_total_duration, existing_start, existing_duration):
-            overlapping_units += existing_units
-            if overlapping_units + reservation_units > capacity:
-                return False, "The next 30 minutes are already booked."
-
+            overlapping_units += get_service_capacity_units(business_id, existing_service)
+    if overlapping_units + current_units > capacity:
+        return False, "The next 30 minutes are already booked."
     return True, None
-
 
 @app.route("/reservations/add-30/<int:reservation_id>", methods=["POST"])
 def add_30_minutes_to_reservation(reservation_id):

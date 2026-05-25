@@ -2673,7 +2673,13 @@ def is_time_within_business_hours(time_str, open_time, close_time):
     chosen = datetime.strptime(time_str, "%H:%M").time()
     start = datetime.strptime(open_time, "%H:%M").time()
     end = datetime.strptime(close_time, "%H:%M").time()
-    return start <= chosen <= end
+
+    # Normal same-day range, e.g. 09:00 -> 18:00
+    if start <= end:
+        return start <= chosen <= end
+
+    # Overnight range, e.g. 16:00 -> 00:00 or 16:00 -> 02:00
+    return chosen >= start or chosen <= end
 
 def humanize_reply(lang, fallback_text, purpose="general"):
     return fallback_text

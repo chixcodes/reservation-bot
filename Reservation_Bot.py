@@ -5395,6 +5395,7 @@ def update_hours():
     conn = get_db_connection()
     c = conn.cursor()
 
+    # Save business hours
     for weekday in range(7):
         is_closed = request.form.get(f"closed_{weekday}") == "on"
         open_time = request.form.get(f"open_{weekday}") or None
@@ -5416,6 +5417,42 @@ def update_hours():
             """,
             (business_id, weekday, is_closed, open_time, close_time),
         )
+
+    # NEW: sync all existing resources to the same hours
+    c.execute(
+        """
+        SELECT id
+        FROM resources
+        WHERE business_id = %s
+        """,
+        (business_id,),
+    )
+    resource_rows = c.fetchall()
+
+    for resource in resource_rows:
+        resource_id = resource["id"]
+
+        for weekday in range(7):
+            is_closed = request.form.get(f"closed_{weekday}") == "on"
+            open_time = request.form.get(f"open_{weekday}") or None
+            close_time = request.form.get(f"close_{weekday}") or None
+
+            if is_closed:
+                open_time = None
+                close_time = None
+
+            c.execute(
+                """
+                INSERT INTO resource_hours (business_id, resource_id, weekday, is_closed, open_time, close_time)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (business_id, resource_id, weekday)
+                DO UPDATE SET
+                    is_closed = EXCLUDED.is_closed,
+                    open_time = EXCLUDED.open_time,
+                    close_time = EXCLUDED.close_time
+                """,
+                (business_id, resource_id, weekday, is_closed, open_time, close_time),
+            )
 
     conn.commit()
     conn.close()

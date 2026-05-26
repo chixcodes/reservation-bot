@@ -80,7 +80,45 @@ def clear_message_processing(message_id):
     if message_id:
         processing_message_ids.pop(message_id, None)
 
+_multi_business_columns_ready = False
+
+def ensure_multi_business_whatsapp_columns():
+    """
+    Makes the app safe for multiple WhatsApp businesses.
+
+    This is intentionally lightweight and can be called before webhook/admin logic.
+    It prevents crashes if the production database is missing one of the columns
+    needed for onboarding a new client number.
+    """
+    global _multi_business_columns_ready
+    if _multi_business_columns_ready:
+        return
+
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    c.execute("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS provider TEXT DEFAULT 'meta'")
+    c.execute("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS phone_number_id TEXT")
+    c.execute("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS access_token TEXT")
+    c.execute("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS calendar_id TEXT DEFAULT 'primary'")
+    c.execute("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS timezone TEXT DEFAULT 'Asia/Beirut'")
+    c.execute("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS gcal_credentials TEXT")
+
+    # Some older databases/users tables may not have role yet.
+    c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'business'")
+
+    conn.commit()
+    conn.close()
+    _multi_business_columns_ready = True
+
+
 def get_business_by_phone_number_id(phone_number_id: str):
+    ensure_multi_business_whatsapp_columns()
+
+    phone_number_id = (phone_number_id or "").strip()
+    if not phone_number_id:
+        return None
+
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
@@ -835,13 +873,21 @@ SERVICE_KEYWORDS = {
 # ------------------ LOW-LEVEL HELPERS ------------------
 
 def send_message(to: str, text: str, business: dict):
-    if not business.get("phone_number_id") or not business.get("access_token"):
-        print("send_message: missing phone_number_id or access_token for business")
+    business = business or {}
+    phone_number_id = (business.get("phone_number_id") or "").strip()
+    access_token = (business.get("access_token") or os.getenv("ACCESS_TOKEN") or "").strip()
+
+    if not phone_number_id:
+        print("send_message: missing phone_number_id for business", business.get("id"))
         return False
 
-    url = f"https://graph.facebook.com/v21.0/{business['phone_number_id']}/messages"
+    if not access_token:
+        print("send_message: missing access_token for business", business.get("id"))
+        return False
+
+    url = f"https://graph.facebook.com/v21.0/{phone_number_id}/messages"
     headers = {
-        "Authorization": f"Bearer {business['access_token']}",
+        "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
     }
     payload = {
@@ -4160,6 +4206,12 @@ def webhook():
         print("Meta webhook parse error:", e)
         return "ok", 200
 
+    # Ensure production DB has the multi-business columns before lookup.
+    try:
+        ensure_multi_business_whatsapp_columns()
+    except Exception as e:
+        print("ensure_multi_business_whatsapp_columns warning:", e, flush=True)
+
     if "statuses" in value:
         return "ok", 200
 
@@ -4184,8 +4236,13 @@ def webhook():
 
     phone = message.get("from")
     text = message.get("text", {}).get("body", "").strip()
-    phone_number_id = value["metadata"]["phone_number_id"]
+    phone_number_id = (value.get("metadata", {}) or {}).get("phone_number_id", "").strip()
     print("phone:", phone, "text:", text, "phone_number_id:", phone_number_id, flush=True)
+
+    if not phone_number_id:
+        clear_message_processing(message_id)
+        print("Webhook payload has no phone_number_id; cannot route business.", flush=True)
+        return "ok", 200
 
     business = get_business_by_phone_number_id(phone_number_id)
     print("business lookup result:", dict(business) if business else None, flush=True)
@@ -4215,31 +4272,50 @@ def admin_businesses():
     if not require_support():
         return redirect("/login")
 
+    ensure_multi_business_whatsapp_columns()
+
     conn = get_db_connection()
     c = conn.cursor()
 
     if request.method == "POST":
         name = request.form.get("name", "").strip()
-        provider = request.form.get("provider", "meta").strip().lower()
+        provider = request.form.get("provider", "meta").strip().lower() or "meta"
         phone_number_id = request.form.get("phone_number_id", "").strip()
-        access_token = request.form.get("access_token", "").strip()
-        calendar_id = request.form.get("calendar_id", "primary").strip()
-        timezone = request.form.get("timezone", "Asia/Beirut").strip()
+        access_token = (request.form.get("access_token", "").strip() or os.getenv("ACCESS_TOKEN", "").strip())
+        calendar_id = request.form.get("calendar_id", "primary").strip() or "primary"
+        timezone = request.form.get("timezone", "Asia/Beirut").strip() or "Asia/Beirut"
 
-        if name and phone_number_id and access_token:
+        # Avoid ON CONFLICT because older Render databases may not have a unique
+        # constraint on phone_number_id yet.
+        if name and phone_number_id:
             c.execute(
-                """
-                INSERT INTO businesses (name, provider, phone_number_id, access_token, calendar_id, timezone)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                ON CONFLICT (phone_number_id) DO UPDATE SET
-                  name = EXCLUDED.name,
-                  provider = EXCLUDED.provider,
-                  access_token = EXCLUDED.access_token,
-                  calendar_id = EXCLUDED.calendar_id,
-                  timezone = EXCLUDED.timezone
-                """,
-                (name, provider, phone_number_id, access_token, calendar_id, timezone),
+                "SELECT id FROM businesses WHERE phone_number_id = %s LIMIT 1",
+                (phone_number_id,),
             )
+            existing = c.fetchone()
+
+            if existing:
+                c.execute(
+                    """
+                    UPDATE businesses
+                    SET name = %s,
+                        provider = %s,
+                        access_token = %s,
+                        calendar_id = %s,
+                        timezone = %s
+                    WHERE id = %s
+                    """,
+                    (name, provider, access_token, calendar_id, timezone, existing["id"]),
+                )
+            else:
+                c.execute(
+                    """
+                    INSERT INTO businesses (name, provider, phone_number_id, access_token, calendar_id, timezone)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (name, provider, phone_number_id, access_token, calendar_id, timezone),
+                )
+
             conn.commit()
 
         conn.close()
@@ -5985,6 +6061,7 @@ def add_30_minutes_to_reservation(reservation_id):
 
 if __name__ == "__main__":
     init_db()       # <-- creates tables automatically
+    ensure_multi_business_whatsapp_columns()
     ensure_fb_tables()
     ensure_business_feature_columns()
     ensure_reservation_extension_columns()

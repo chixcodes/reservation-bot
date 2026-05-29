@@ -163,6 +163,8 @@ def csrf_protect():
     # Skip routes that should not use form CSRF
     if request.path == "/webhook":
         return
+    if request.path.startswith("/wa-onboarding"):
+        return
     if request.path.startswith("/login"):
         return
     if request.path.startswith("/register"):
@@ -176,6 +178,298 @@ def csrf_protect():
     if not session_token or not form_token or session_token != form_token:
         abort(403)
 
+# ------------------ WHATSAPP EMBEDDED SIGNUP / COEXISTENCE ------------------
+
+@app.route("/wa-onboarding")
+def wa_onboarding():
+    """
+    Page used by a logged-in business owner to connect their existing
+    WhatsApp Business app number to EzReserve using Meta Embedded Signup.
+    """
+    if "business_id" not in session:
+        return redirect("/login")
+
+    meta_app_id = os.getenv("META_APP_ID", "").strip()
+    config_id = os.getenv("WHATSAPP_CONFIGURATION_ID", "").strip()
+
+    if not meta_app_id or not config_id:
+        return (
+            "Missing META_APP_ID or WHATSAPP_CONFIGURATION_ID in Render environment.",
+            500,
+        )
+
+    return render_template_string(
+        """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Connect WhatsApp Business</title>
+    <meta charset="UTF-8">
+</head>
+<body style="font-family: Arial, sans-serif; padding: 40px; max-width: 800px; margin: auto;">
+    <h2>Connect WhatsApp Business</h2>
+
+    <p>
+        This will connect this business WhatsApp number to EzReserve.
+        Use this only for the correct logged-in business account.
+    </p>
+
+    <p style="background:#fff3cd; padding:12px; border-radius:6px; border:1px solid #ffe69c;">
+        Important: choose the existing WhatsApp Business app / coexistence option.
+        If Meta asks to migrate, disconnect, or delete the WhatsApp account, stop.
+    </p>
+
+    <button onclick="launchWhatsAppSignup()"
+            style="background:#1877f2;color:white;border:0;border-radius:6px;padding:12px 20px;font-size:16px;cursor:pointer;">
+        Connect WhatsApp
+    </button>
+
+    <pre id="result"
+         style="margin-top:20px;background:#f5f5f5;padding:15px;white-space:pre-wrap;border-radius:6px;"></pre>
+
+    <script>
+      let latestAuthCode = null;
+      let latestPhoneNumberId = null;
+      let latestWabaId = null;
+      let alreadySaved = false;
+
+      function logResult(text) {
+        const box = document.getElementById("result");
+        box.textContent += "\\n" + text;
+      }
+
+      function trySaveConnection() {
+        if (alreadySaved) {
+          return;
+        }
+
+        if (!latestPhoneNumberId || !latestWabaId) {
+          return;
+        }
+
+        alreadySaved = true;
+
+        fetch("/wa-onboarding/save", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            phone_number_id: latestPhoneNumberId,
+            waba_id: latestWabaId,
+            code: latestAuthCode
+          })
+        })
+        .then(res => res.json())
+        .then(result => {
+          logResult("Saved to EzReserve: " + JSON.stringify(result, null, 2));
+
+          if (result.ok) {
+            alert("WhatsApp connected successfully.");
+          } else {
+            alert("WhatsApp connection finished, but saving failed: " + result.error);
+          }
+        })
+        .catch(err => {
+          logResult("Save error: " + err);
+          alert("Could not save WhatsApp connection. Check Render logs.");
+        });
+      }
+
+      window.fbAsyncInit = function() {
+        FB.init({
+          appId: "{{ meta_app_id }}",
+          cookie: true,
+          xfbml: true,
+          version: "v21.0"
+        });
+      };
+
+      window.addEventListener("message", function(event) {
+        if (event.origin !== "https://www.facebook.com" && event.origin !== "https://web.facebook.com") {
+          return;
+        }
+
+        try {
+          const data = JSON.parse(event.data);
+
+          if (data.type === "WA_EMBEDDED_SIGNUP") {
+            logResult("WA event: " + JSON.stringify(data, null, 2));
+
+            if (data.event === "FINISH") {
+              latestPhoneNumberId = data.data.phone_number_id;
+              latestWabaId = data.data.waba_id;
+
+              logResult("Phone Number ID: " + latestPhoneNumberId);
+              logResult("WABA ID: " + latestWabaId);
+
+              trySaveConnection();
+            }
+
+            if (data.event === "CANCEL") {
+              logResult("User cancelled WhatsApp signup.");
+            }
+
+            if (data.event === "ERROR") {
+              logResult("WhatsApp signup error: " + JSON.stringify(data, null, 2));
+            }
+          }
+        } catch (e) {
+          // Ignore non-JSON messages from Facebook
+        }
+      });
+
+      function launchWhatsAppSignup() {
+        logResult("Starting WhatsApp Embedded Signup...");
+
+        FB.login(function(response) {
+          if (response.authResponse) {
+            latestAuthCode = response.authResponse.code || null;
+            logResult("Auth code received.");
+            trySaveConnection();
+          } else {
+            logResult("User cancelled login or did not authorize.");
+          }
+        }, {
+          config_id: "{{ config_id }}",
+          response_type: "code",
+          override_default_response_type: true,
+          extras: {
+            setup: {},
+            featureType: "whatsapp_business_app_onboarding",
+            sessionInfoVersion: "3"
+          }
+        });
+      }
+    </script>
+
+    <script async defer crossorigin="anonymous"
+      src="https://connect.facebook.net/en_US/sdk.js">
+    </script>
+</body>
+</html>
+        """,
+        meta_app_id=meta_app_id,
+        config_id=config_id,
+    )
+
+
+def exchange_whatsapp_signup_code(code):
+    """
+    Exchange the Embedded Signup auth code for a Business Integration
+    System User access token. This token is what lets your app send messages
+    for the connected WhatsApp business asset.
+    """
+    if not code:
+        return None, None
+
+    meta_app_id = os.getenv("META_APP_ID", "").strip()
+    meta_app_secret = os.getenv("META_APP_SECRET", "").strip()
+
+    if not meta_app_id or not meta_app_secret:
+        print("Missing META_APP_ID or META_APP_SECRET; cannot exchange code.", flush=True)
+        return None, None
+
+    try:
+        response = requests.get(
+            "https://graph.facebook.com/v21.0/oauth/access_token",
+            params={
+                "client_id": meta_app_id,
+                "client_secret": meta_app_secret,
+                "code": code,
+            },
+            timeout=15,
+        )
+
+        print("Token exchange status:", response.status_code, flush=True)
+        print("Token exchange body:", response.text, flush=True)
+
+        if not response.ok:
+            return None, None
+
+        data = response.json()
+        access_token = data.get("access_token")
+        expires_in = data.get("expires_in")
+
+        return access_token, expires_in
+
+    except Exception as e:
+        print("exchange_whatsapp_signup_code error:", e, flush=True)
+        return None, None
+
+
+@app.route("/wa-onboarding/save", methods=["POST"])
+def wa_onboarding_save():
+    """
+    Saves the phone_number_id and waba_id returned by Embedded Signup
+    into the currently logged-in business row.
+    """
+    if "business_id" not in session:
+        return jsonify({"ok": False, "error": "Not logged in"}), 401
+
+    data = request.get_json(silent=True) or {}
+
+    phone_number_id = (data.get("phone_number_id") or "").strip()
+    waba_id = (data.get("waba_id") or "").strip()
+    code = (data.get("code") or "").strip()
+    business_id = session["business_id"]
+
+    if not phone_number_id:
+        return jsonify({"ok": False, "error": "Missing phone_number_id"}), 400
+
+    access_token, expires_in = exchange_whatsapp_signup_code(code)
+
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    c.execute("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS phone_number_id TEXT")
+    c.execute("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS waba_id TEXT")
+    c.execute("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS access_token TEXT")
+    c.execute("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS token_expires_at TIMESTAMPTZ")
+
+    if access_token and expires_in:
+        c.execute(
+            """
+            UPDATE businesses
+            SET phone_number_id = %s,
+                waba_id = %s,
+                access_token = %s,
+                token_expires_at = NOW() + (%s || ' seconds')::interval
+            WHERE id = %s
+            """,
+            (phone_number_id, waba_id, access_token, str(expires_in), business_id),
+        )
+    elif access_token:
+        c.execute(
+            """
+            UPDATE businesses
+            SET phone_number_id = %s,
+                waba_id = %s,
+                access_token = %s
+            WHERE id = %s
+            """,
+            (phone_number_id, waba_id, access_token, business_id),
+        )
+    else:
+        c.execute(
+            """
+            UPDATE businesses
+            SET phone_number_id = %s,
+                waba_id = %s
+            WHERE id = %s
+            """,
+            (phone_number_id, waba_id, business_id),
+        )
+
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        "ok": True,
+        "business_id": business_id,
+        "phone_number_id": phone_number_id,
+        "waba_id": waba_id,
+        "token_saved": bool(access_token),
+        "expires_in": expires_in,
+    })
 
 _fb_tables_ready = False
 
@@ -873,16 +1167,15 @@ SERVICE_KEYWORDS = {
 # ------------------ LOW-LEVEL HELPERS ------------------
 
 def send_message(to: str, text: str, business: dict):
-    business = business or {}
     phone_number_id = (business.get("phone_number_id") or "").strip()
     access_token = (business.get("access_token") or os.getenv("ACCESS_TOKEN") or "").strip()
 
     if not phone_number_id:
-        print("send_message: missing phone_number_id for business", business.get("id"))
+        print("send_message: missing phone_number_id for business", flush=True)
         return False
 
     if not access_token:
-        print("send_message: missing access_token for business", business.get("id"))
+        print("send_message: missing access_token for business and no ACCESS_TOKEN fallback", flush=True)
         return False
 
     url = f"https://graph.facebook.com/v21.0/{phone_number_id}/messages"
@@ -903,7 +1196,7 @@ def send_message(to: str, text: str, business: dict):
         print("send_message body:", r.text, flush=True)
         return r.ok
     except Exception as e:
-        print("send_message error (meta):", e)
+        print("send_message error (meta):", e, flush=True)
         return False
 
 def ai_pick_service(business: dict, user_text: str):

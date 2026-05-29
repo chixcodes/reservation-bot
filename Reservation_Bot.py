@@ -4724,6 +4724,108 @@ def webhook():
         print("process_incoming_message error:", str(e), flush=True)
         return "ok", 200
 
+@app.route("/privacy")
+def privacy_policy():
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>EzReserve Privacy Policy</title>
+        <meta charset="UTF-8">
+    </head>
+    <body style="font-family: Arial; max-width: 850px; margin: auto; padding: 40px;">
+        <h1>EzReserve Privacy Policy</h1>
+        <p>Last updated: May 2026</p>
+
+        <p>
+            EzReserve helps businesses manage reservations through WhatsApp,
+            a web dashboard, and Google Calendar integration.
+        </p>
+
+        <h2>Information We Collect</h2>
+        <p>
+            We may collect business information such as business name,
+            WhatsApp Business account information, phone number ID,
+            services, working hours, reservation details, and calendar settings.
+            We may also process customer booking information such as customer name,
+            phone number, requested service, date, and time.
+        </p>
+
+        <h2>How We Use Information</h2>
+        <p>
+            We use this information to manage reservations, respond to customers,
+            sync bookings to Google Calendar, and provide dashboard functionality
+            to the business.
+        </p>
+
+        <h2>Sharing of Information</h2>
+        <p>
+            We do not sell personal data. We only share data with services needed
+            to operate the product, such as Meta WhatsApp Business Platform,
+            Google Calendar, hosting providers, and database providers.
+        </p>
+
+        <h2>Data Retention</h2>
+        <p>
+            We keep data only as long as needed to provide the service, comply with
+            legal obligations, resolve issues, and support the business.
+        </p>
+
+        <h2>Data Deletion</h2>
+        <p>
+            Businesses or users may request deletion of their data by contacting us
+            at charbelkhoury45@hotmail.com.
+        </p>
+
+        <h2>Contact</h2>
+        <p>
+            For privacy questions, contact us at charbelkhoury45@hotmail.com.
+        </p>
+    </body>
+    </html>
+    """
+
+
+@app.route("/data-deletion")
+def data_deletion():
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>EzReserve Data Deletion Instructions</title>
+        <meta charset="UTF-8">
+    </head>
+    <body style="font-family: Arial; max-width: 850px; margin: auto; padding: 40px;">
+        <h1>EzReserve Data Deletion Instructions</h1>
+        <p>Last updated: May 2026</p>
+
+        <p>
+            If you connected EzReserve through Facebook or Meta and want your data deleted,
+            you can request deletion by emailing us at charbelkhoury45@hotmail.com.
+        </p>
+
+        <p>Please include:</p>
+        <ul>
+            <li>Your business name</li>
+            <li>The WhatsApp number connected to EzReserve</li>
+            <li>The email used for your EzReserve dashboard account</li>
+        </ul>
+
+        <p>
+            We will review the request and delete or disconnect the related data
+            where legally and technically possible.
+        </p>
+
+        <p>
+            You can also remove EzReserve from your Facebook Business Integrations
+            from your Facebook account settings.
+        </p>
+
+        <h2>Contact</h2>
+        <p>Email: charbelkhoury45@hotmail.com</p>
+    </body>
+    </html>
+    """
 # ------------------ ADMIN BUSINESSES ------------------ #
 
 

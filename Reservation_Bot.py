@@ -470,6 +470,175 @@ def wa_onboarding_save():
         "token_saved": bool(access_token),
         "expires_in": expires_in,
     })
+# ------------------ BUSINESS SETUP PAGE ------------------
+
+@app.route("/business-setup", methods=["GET", "POST"])
+def business_setup():
+    if "business_id" not in session:
+        return redirect("/login")
+
+    business_id = session["business_id"]
+
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    # Make sure needed columns exist
+    c.execute("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS phone_number_id TEXT")
+    c.execute("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS waba_id TEXT")
+    c.execute("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS access_token TEXT")
+    c.execute("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS calendar_id TEXT")
+    c.execute("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS timezone TEXT DEFAULT 'Asia/Beirut'")
+    conn.commit()
+
+    message = None
+    error = None
+
+    if request.method == "POST":
+        name = (request.form.get("name") or "").strip()
+        phone_number_id = (request.form.get("phone_number_id") or "").strip()
+        waba_id = (request.form.get("waba_id") or "").strip()
+        calendar_id = (request.form.get("calendar_id") or "").strip()
+        timezone = (request.form.get("timezone") or "Asia/Beirut").strip()
+
+        if not name:
+            error = "Business name is required."
+        else:
+            c.execute(
+                """
+                UPDATE businesses
+                SET name = %s,
+                    phone_number_id = %s,
+                    waba_id = %s,
+                    calendar_id = %s,
+                    timezone = %s
+                WHERE id = %s
+                """,
+                (
+                    name,
+                    phone_number_id or None,
+                    waba_id or None,
+                    calendar_id or None,
+                    timezone or "Asia/Beirut",
+                    business_id,
+                ),
+            )
+            conn.commit()
+            message = "Business settings saved successfully."
+
+    c.execute(
+        """
+        SELECT id, name, phone_number_id, waba_id, calendar_id, timezone, access_token
+        FROM businesses
+        WHERE id = %s
+        """,
+        (business_id,),
+    )
+    business = c.fetchone()
+
+    conn.close()
+
+    if not business:
+        return "Business not found.", 404
+
+    html = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Business Setup</title>
+        <meta charset="UTF-8">
+    </head>
+    <body style="font-family: Arial, sans-serif; padding: 40px; max-width: 850px; margin: auto;">
+        <h2>Business Setup</h2>
+
+        {% if message %}
+            <div style="background:#d1e7dd; color:#0f5132; padding:12px; border-radius:6px; margin-bottom:15px;">
+                {{ message }}
+            </div>
+        {% endif %}
+
+        {% if error %}
+            <div style="background:#f8d7da; color:#842029; padding:12px; border-radius:6px; margin-bottom:15px;">
+                {{ error }}
+            </div>
+        {% endif %}
+
+        <div style="background:#f5f5f5; padding:15px; border-radius:6px; margin-bottom:20px;">
+            <p><b>Business ID:</b> {{ business["id"] }}</p>
+            <p><b>WhatsApp connected?</b>
+                {% if business["phone_number_id"] %}
+                    ✅ Yes
+                {% else %}
+                    ❌ No
+                {% endif %}
+            </p>
+            <p><b>Google Calendar ID exists?</b>
+                {% if business["calendar_id"] %}
+                    ✅ Yes: {{ business["calendar_id"] }}
+                {% else %}
+                    ❌ No
+                {% endif %}
+            </p>
+            <p><b>Access token saved?</b>
+                {% if business["access_token"] %}
+                    ✅ Yes
+                {% else %}
+                    ❌ No business-specific token. Render ACCESS_TOKEN fallback may be used.
+                {% endif %}
+            </p>
+        </div>
+
+        <form method="POST">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+
+            <p>
+                <label><b>Business name</b></label><br>
+                <input name="name" value="{{ business["name"] or "" }}" style="width:100%; padding:10px;">
+            </p>
+
+            <p>
+                <label><b>WhatsApp Phone Number ID</b></label><br>
+                <input name="phone_number_id" value="{{ business["phone_number_id"] or "" }}" style="width:100%; padding:10px;">
+                <small>This should be filled automatically after WhatsApp onboarding. You can also paste it manually if needed.</small>
+            </p>
+
+            <p>
+                <label><b>WABA ID</b></label><br>
+                <input name="waba_id" value="{{ business["waba_id"] or "" }}" style="width:100%; padding:10px;">
+            </p>
+
+            <p>
+                <label><b>Google Calendar ID</b></label><br>
+                <input name="calendar_id" value="{{ business["calendar_id"] or "" }}" style="width:100%; padding:10px;">
+                <small>Paste the padel court calendar ID here.</small>
+            </p>
+
+            <p>
+                <label><b>Timezone</b></label><br>
+                <input name="timezone" value="{{ business["timezone"] or "Asia/Beirut" }}" style="width:100%; padding:10px;">
+            </p>
+
+            <button type="submit"
+                    style="background:#0d6efd; color:white; border:0; padding:12px 20px; border-radius:6px; cursor:pointer;">
+                Save Settings
+            </button>
+        </form>
+
+        <hr style="margin:30px 0;">
+
+        <p>
+            <a href="/wa-onboarding">Connect WhatsApp</a> |
+            <a href="/dashboard">Back to Dashboard</a>
+        </p>
+    </body>
+    </html>
+    """
+
+    return render_template_string(
+        html,
+        business=business,
+        message=message,
+        error=error,
+    )
 
 _fb_tables_ready = False
 

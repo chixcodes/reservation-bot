@@ -472,6 +472,8 @@ def wa_onboarding_save():
     })
 # ------------------ BUSINESS SETUP PAGE ------------------
 
+# ------------------ BUSINESS SETUP PAGE ------------------
+
 @app.route("/business-setup", methods=["GET", "POST"])
 def business_setup():
     if "business_id" not in session:
@@ -483,9 +485,11 @@ def business_setup():
     c = conn.cursor()
 
     # Make sure needed columns exist
+    c.execute("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS provider TEXT DEFAULT 'Meta'")
     c.execute("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS phone_number_id TEXT")
     c.execute("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS waba_id TEXT")
     c.execute("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS access_token TEXT")
+    c.execute("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS token_expires_at TIMESTAMPTZ")
     c.execute("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS calendar_id TEXT")
     c.execute("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS timezone TEXT DEFAULT 'Asia/Beirut'")
     conn.commit()
@@ -497,48 +501,106 @@ def business_setup():
         name = (request.form.get("name") or "").strip()
         phone_number_id = (request.form.get("phone_number_id") or "").strip()
         waba_id = (request.form.get("waba_id") or "").strip()
+        access_token = (request.form.get("access_token") or "").strip()
         calendar_id = (request.form.get("calendar_id") or "").strip()
         timezone = (request.form.get("timezone") or "Asia/Beirut").strip()
 
         if not name:
             error = "Business name is required."
         else:
-            c.execute(
-                """
-                UPDATE businesses
-                SET name = %s,
-                    phone_number_id = %s,
-                    waba_id = %s,
-                    calendar_id = %s,
-                    timezone = %s
-                WHERE id = %s
-                """,
-                (
-                    name,
-                    phone_number_id or None,
-                    waba_id or None,
-                    calendar_id or None,
-                    timezone or "Asia/Beirut",
-                    business_id,
-                ),
-            )
+            # If access_token is left empty, keep the old token.
+            # This prevents accidentally deleting the token when editing calendar/name later.
+            if access_token:
+                c.execute(
+                    """
+                    UPDATE businesses
+                    SET name = %s,
+                        phone_number_id = %s,
+                        waba_id = %s,
+                        access_token = %s,
+                        calendar_id = %s,
+                        timezone = %s
+                    WHERE id = %s
+                    """,
+                    (
+                        name,
+                        phone_number_id or None,
+                        waba_id or None,
+                        access_token,
+                        calendar_id or None,
+                        timezone or "Asia/Beirut",
+                        business_id,
+                    ),
+                )
+            else:
+                c.execute(
+                    """
+                    UPDATE businesses
+                    SET name = %s,
+                        phone_number_id = %s,
+                        waba_id = %s,
+                        calendar_id = %s,
+                        timezone = %s
+                    WHERE id = %s
+                    """,
+                    (
+                        name,
+                        phone_number_id or None,
+                        waba_id or None,
+                        calendar_id or None,
+                        timezone or "Asia/Beirut",
+                        business_id,
+                    ),
+                )
+
             conn.commit()
             message = "Business settings saved successfully."
 
     c.execute(
         """
-        SELECT id, name, phone_number_id, waba_id, calendar_id, timezone, access_token
+        SELECT
+            id,
+            name,
+            provider,
+            phone_number_id,
+            waba_id,
+            calendar_id,
+            timezone,
+            CASE
+                WHEN access_token IS NOT NULL AND access_token <> ''
+                THEN TRUE
+                ELSE FALSE
+            END AS has_access_token,
+            token_expires_at
         FROM businesses
         WHERE id = %s
         """,
         (business_id,),
     )
-    business = c.fetchone()
 
+    row = c.fetchone()
     conn.close()
 
-    if not business:
+    if not row:
         return "Business not found.", 404
+
+    columns = [
+        "id",
+        "name",
+        "provider",
+        "phone_number_id",
+        "waba_id",
+        "calendar_id",
+        "timezone",
+        "has_access_token",
+        "token_expires_at",
+    ]
+
+    # Works whether cursor returns a tuple or dict-like row
+    if isinstance(row, dict):
+        business = row
+    else:
+        business = dict(zip(columns, row))
 
     html = """
     <!DOCTYPE html>
@@ -547,7 +609,8 @@ def business_setup():
         <title>Business Setup</title>
         <meta charset="UTF-8">
     </head>
-    <body style="font-family: Arial, sans-serif; padding: 40px; max-width: 850px; margin: auto;">
+
+    <body style="font-family: Arial, sans-serif; padding: 40px; max-width: 900px; margin: auto;">
         <h2>Business Setup</h2>
 
         {% if message %}
@@ -562,27 +625,40 @@ def business_setup():
             </div>
         {% endif %}
 
-        <div style="background:#f5f5f5; padding:15px; border-radius:6px; margin-bottom:20px;">
-            <p><b>Business ID:</b> {{ business["id"] }}</p>
+        <div style="background:#f5f5f5; padding:18px; border-radius:8px; margin-bottom:25px;">
+            <p><b>Business ID:</b> {{ business.get("id") }}</p>
+
+            <p><b>Business name:</b> {{ business.get("name") or "Not set" }}</p>
+
             <p><b>WhatsApp connected?</b>
-                {% if business["phone_number_id"] %}
+                {% if business.get("phone_number_id") %}
                     ✅ Yes
                 {% else %}
                     ❌ No
                 {% endif %}
             </p>
+
+            <p><b>WABA ID exists?</b>
+                {% if business.get("waba_id") %}
+                    ✅ Yes
+                {% else %}
+                    ❌ No
+                {% endif %}
+            </p>
+
             <p><b>Google Calendar ID exists?</b>
-                {% if business["calendar_id"] %}
-                    ✅ Yes: {{ business["calendar_id"] }}
+                {% if business.get("calendar_id") %}
+                    ✅ Yes: {{ business.get("calendar_id") }}
                 {% else %}
                     ❌ No
                 {% endif %}
             </p>
-            <p><b>Access token saved?</b>
-                {% if business["access_token"] %}
+
+            <p><b>WhatsApp access token saved?</b>
+                {% if business.get("has_access_token") %}
                     ✅ Yes
                 {% else %}
-                    ❌ No business-specific token. Render ACCESS_TOKEN fallback may be used.
+                    ❌ No
                 {% endif %}
             </p>
         </div>
@@ -592,29 +668,53 @@ def business_setup():
 
             <p>
                 <label><b>Business name</b></label><br>
-                <input name="name" value="{{ business["name"] or "" }}" style="width:100%; padding:10px;">
+                <input name="name"
+                       value="{{ business.get("name") or "" }}"
+                       style="width:100%; padding:10px;">
             </p>
 
             <p>
                 <label><b>WhatsApp Phone Number ID</b></label><br>
-                <input name="phone_number_id" value="{{ business["phone_number_id"] or "" }}" style="width:100%; padding:10px;">
-                <small>This should be filled automatically after WhatsApp onboarding. You can also paste it manually if needed.</small>
+                <input name="phone_number_id"
+                       value="{{ business.get("phone_number_id") or "" }}"
+                       style="width:100%; padding:10px;">
+                <small>Paste the phone_number_id given by Dualhook.</small>
             </p>
 
             <p>
                 <label><b>WABA ID</b></label><br>
-                <input name="waba_id" value="{{ business["waba_id"] or "" }}" style="width:100%; padding:10px;">
+                <input name="waba_id"
+                       value="{{ business.get("waba_id") or "" }}"
+                       style="width:100%; padding:10px;">
+                <small>Paste the WABA ID given by Dualhook.</small>
+            </p>
+
+            <p>
+                <label><b>WhatsApp Access Token / API Token</b></label><br>
+                <input name="access_token"
+                       type="password"
+                       value=""
+                       placeholder="Paste Dualhook/Meta token here. Leave blank to keep existing token."
+                       style="width:100%; padding:10px;">
+                <small>
+                    Paste the token given by Dualhook. For security, this field is blank after saving.
+                    If you leave it blank, the old token stays saved.
+                </small>
             </p>
 
             <p>
                 <label><b>Google Calendar ID</b></label><br>
-                <input name="calendar_id" value="{{ business["calendar_id"] or "" }}" style="width:100%; padding:10px;">
-                <small>Paste the padel court calendar ID here.</small>
+                <input name="calendar_id"
+                       value="{{ business.get("calendar_id") or "" }}"
+                       style="width:100%; padding:10px;">
+                <small>Paste the CourtUp Google Calendar ID here.</small>
             </p>
 
             <p>
                 <label><b>Timezone</b></label><br>
-                <input name="timezone" value="{{ business["timezone"] or "Asia/Beirut" }}" style="width:100%; padding:10px;">
+                <input name="timezone"
+                       value="{{ business.get("timezone") or "Asia/Beirut" }}"
+                       style="width:100%; padding:10px;">
             </p>
 
             <button type="submit"
@@ -626,7 +726,7 @@ def business_setup():
         <hr style="margin:30px 0;">
 
         <p>
-            <a href="/wa-onboarding">Connect WhatsApp</a> |
+            <a href="/wa-onboarding">Connect WhatsApp through Meta</a> |
             <a href="/dashboard">Back to Dashboard</a>
         </p>
     </body>
@@ -1348,10 +1448,12 @@ def send_message(to: str, text: str, business: dict):
         return False
 
     url = f"https://graph.facebook.com/v21.0/{phone_number_id}/messages"
+
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
     }
+
     payload = {
         "messaging_product": "whatsapp",
         "to": to,
